@@ -79,7 +79,7 @@ This audit evaluates the experimental methodology, computational execution, repo
 ### Rule 15: Antislop Continuous Mode Adherence
 - **Status:** PASS (Strictly Verified).
 - **Audit Detail:** Antislop Mode 1 (Continuous) was strictly enforced across all documentation, code comments, and manuscript text:
-  - Zero em dashes (`—`) were used in any written artifact.
+  - Zero em dashes (` - `) were used in any written artifact.
   - No generic marketing buzzwords ("revolutionary", "seamless", "game-changing", "supercharge").
   - Objective, neutral, scholarly tone maintained throughout.
 

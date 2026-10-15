@@ -61,6 +61,6 @@
 ## 4. Antislop Compliance
 
 Anti-slop rules are activated in **continuous execution mode** (Mode 1: During).
-- Em dash (`—`) ban strictly adhered to in all written prose, figure captions, and documentation.
+- Em dash (` - `) ban strictly adhered to in all written prose, figure captions, and documentation.
 - Zero fabricated statistics, zero unmeasured accuracy claims.
 - Code comments focus purely on algorithmic intent, geometric coordinate frames, and mathematical bounds.

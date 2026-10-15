@@ -197,3 +197,39 @@ def test_apply_filter_suite():
     assert f3.shape == disp.shape
     assert f3[0, 2] == 0.0
 
+
+def test_rectification_cache():
+    """Verify rectification map caching and cache invalidation."""
+    stereo.clear_rectification_cache()
+    calib = {
+        "mtx_left": np.eye(3, dtype=np.float64),
+        "dist_left": np.zeros((1, 5), dtype=np.float64),
+        "mtx_right": np.eye(3, dtype=np.float64),
+        "dist_right": np.zeros((1, 5), dtype=np.float64),
+        "R": np.eye(3, dtype=np.float64),
+        "T": np.array([[-0.1], [0.0], [0.0]], dtype=np.float64)
+    }
+    maps1, _, _ = stereo.build_rectification_maps(calib, (320, 240), use_cache=True)
+    maps2, _, _ = stereo.build_rectification_maps(calib, (320, 240), use_cache=True)
+    assert maps1[0] is maps2[0]
+    stereo.clear_rectification_cache()
+    maps3, _, _ = stereo.build_rectification_maps(calib, (320, 240), use_cache=True)
+    assert maps1[0] is not maps3[0]
+
+
+def test_run_stereo_pipeline_presets():
+    """Verify execution of FAST, BALANCED, and QUALITY pipeline presets."""
+    rng = np.random.default_rng(123)
+    base = rng.integers(40, 210, size=(120, 160), dtype=np.uint8)
+    base = cv2.GaussianBlur(base, (3, 3), 1.0)
+    left = base.copy()
+    right = np.roll(base, -4, axis=1)
+
+    for preset in ["FAST", "BALANCED", "QUALITY"]:
+        disp, stats = stereo.run_stereo_pipeline(left, right, preset=preset)
+        assert disp.shape == (120, 160)
+        assert disp.dtype == np.float32
+        assert stats["preset"] == preset
+        assert stats["wall_ms"] > 0.0
+
+

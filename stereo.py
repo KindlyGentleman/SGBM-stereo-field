@@ -5,6 +5,7 @@ completeness-aware benchmark metrics and unsupervised field diagnostics.
 """
 
 from pathlib import Path
+import time
 from typing import Dict, Tuple, Optional, Any
 import cv2
 import numpy as np
@@ -30,12 +31,30 @@ def load_calibration(npz_path: str) -> Dict[str, np.ndarray]:
     return calib
 
 
+_RECT_CACHE: Dict[Tuple, Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], np.ndarray]] = {}
+
+
+def _calib_cache_key(calib: Dict[str, np.ndarray], img_size: Tuple[int, int], alpha: float) -> Tuple:
+    try:
+        t_bytes = calib["T"].tobytes()
+        ml_bytes = calib["mtx_left"].tobytes()
+        mr_bytes = calib["mtx_right"].tobytes()
+        return (t_bytes, ml_bytes, mr_bytes, img_size[0], img_size[1], float(alpha))
+    except Exception:
+        return (id(calib), img_size[0], img_size[1], float(alpha))
+
+
 def build_rectification_maps(
     calib: Dict[str, np.ndarray],
     img_size: Tuple[int, int] = (1280, 720),
-    alpha: float = 0.0
+    alpha: float = 0.0,
+    use_cache: bool = True
 ) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray], np.ndarray]:
     """Compute undistort and rectification remap coordinates using stereoRectify."""
+    cache_key = _calib_cache_key(calib, img_size, alpha)
+    if use_cache and cache_key in _RECT_CACHE:
+        return _RECT_CACHE[cache_key]
+
     R1, R2, P1, P2, Q, roi1, roi2 = cv2.stereoRectify(
         calib["mtx_left"],
         calib["dist_left"],
@@ -52,7 +71,15 @@ def build_rectification_maps(
     map_r1, map_r2 = cv2.initUndistortRectifyMap(
         calib["mtx_right"], calib["dist_right"], R2, P2, img_size, cv2.CV_32FC1
     )
-    return (map_l1, map_l2), (map_r1, map_r2), Q
+    res = ((map_l1, map_l2), (map_r1, map_r2), Q)
+    if use_cache:
+        _RECT_CACHE[cache_key] = res
+    return res
+
+
+def clear_rectification_cache() -> None:
+    """Clear cached rectification coordinates."""
+    _RECT_CACHE.clear()
 
 
 def rectify_pair(
@@ -462,4 +489,145 @@ def compute_metric_depth_errors(
         "rmse_m": rmse,
         "delta_125_pct": d125
     }
+
+
+PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "FAST": {
+        "scale": 0.5,
+        "numDisparities": 80,
+        "blockSize": 5,
+        "P1": 80,
+        "P2": 640,
+        "disp12MaxDiff": 1,
+        "uniquenessRatio": 10,
+        "speckleWindowSize": 100,
+        "speckleRange": 2,
+        "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        "use_wls": False,
+        "filter": "median_valid",
+        "target_fps": 30
+    },
+    "BALANCED": {
+        "scale": 0.5,
+        "numDisparities": 80,
+        "blockSize": 5,
+        "P1": 80,
+        "P2": 640,
+        "disp12MaxDiff": 1,
+        "uniquenessRatio": 10,
+        "speckleWindowSize": 100,
+        "speckleRange": 2,
+        "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        "use_wls": True,
+        "wls_lambda": 4000.0,
+        "wls_sigma": 1.2,
+        "filter": "wls",
+        "target_fps": 15
+    },
+    "QUALITY": {
+        "scale": 1.0,
+        "numDisparities": 160,
+        "blockSize": 7,
+        "P1": 150,
+        "P2": 1200,
+        "disp12MaxDiff": 1,
+        "uniquenessRatio": 10,
+        "speckleWindowSize": 100,
+        "speckleRange": 2,
+        "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
+        "use_wls": True,
+        "wls_lambda": 8000.0,
+        "wls_sigma": 1.5,
+        "filter": "wls",
+        "target_fps": 3
+    }
+}
+
+
+def run_stereo_pipeline(
+    left_img: np.ndarray,
+    right_img: np.ndarray,
+    preset: str = "BALANCED",
+    custom_params: Optional[Dict[str, Any]] = None
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Execute stereo reconstruction pipeline under selected preset configuration.
+
+    Presets:
+    - FAST: 0.5x scale, single-pass SGBM + validity-aware median, target 30 FPS.
+    - BALANCED: 0.5x scale, SGBM + multiscale WLS, target 15 FPS.
+    - QUALITY: 1.0x native resolution, full-range SGBM + full WLS, target 3 FPS.
+    """
+    key = preset.upper().strip()
+    if key not in PIPELINE_PRESETS:
+        raise ValueError(f"Unknown preset: {preset}. Choose from {list(PIPELINE_PRESETS.keys())}")
+
+    cfg = dict(PIPELINE_PRESETS[key])
+    if custom_params:
+        cfg.update(custom_params)
+
+    scale = cfg["scale"]
+    w_orig, h_orig = left_img.shape[1], left_img.shape[0]
+
+    t0 = time.perf_counter()
+    c0 = time.process_time()
+
+    if scale != 1.0:
+        w_s, h_s = int(w_orig * scale), int(h_orig * scale)
+        l_in = cv2.resize(left_img, (w_s, h_s), interpolation=cv2.INTER_AREA)
+        r_in = cv2.resize(right_img, (w_s, h_s), interpolation=cv2.INTER_AREA)
+    else:
+        l_in, r_in = left_img, right_img
+
+    w_in = l_in.shape[1]
+    max_possible_disp = max(16, ((w_in - 1) // 16) * 16)
+    num_disp = min(cfg["numDisparities"], max_possible_disp)
+
+    matcher = create_sgbm_matcher({
+        "minDisparity": 0,
+        "numDisparities": num_disp,
+        "blockSize": cfg["blockSize"],
+        "P1": cfg["P1"],
+        "P2": cfg["P2"],
+        "disp12MaxDiff": cfg.get("disp12MaxDiff", 1),
+        "uniquenessRatio": cfg.get("uniquenessRatio", 10),
+        "speckleWindowSize": cfg.get("speckleWindowSize", 100),
+        "speckleRange": cfg.get("speckleRange", 2),
+        "mode": cfg.get("mode", cv2.STEREO_SGBM_MODE_SGBM_3WAY)
+    })
+
+    if cfg.get("use_wls", False):
+        r_matcher = cv2.ximgproc.createRightMatcher(matcher)
+        dl = matcher.compute(l_in, r_in)
+        dr = r_matcher.compute(r_in, l_in)
+        wls = cv2.ximgproc.createDisparityWLSFilter(matcher)
+        wls.setLambda(cfg.get("wls_lambda", 8000.0))
+        wls.setSigmaColor(cfg.get("wls_sigma", 1.5))
+        d_filt = wls.filter(dl, l_in, None, dr).astype(np.float32) / 16.0
+    else:
+        dl = matcher.compute(l_in, r_in)
+        d_raw = dl.astype(np.float32) / 16.0
+        d_clean = np.where(d_raw > 0, d_raw, 0.0)
+        med = cv2.medianBlur(d_clean, 3)
+        d_filt = np.where(d_clean > 0, med, 0.0)
+
+    d_filt[d_filt <= 0] = 0.0
+
+    if scale != 1.0:
+        d_out = cv2.resize(d_filt, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
+    else:
+        d_out = d_filt
+
+    wall_ms = (time.perf_counter() - t0) * 1000.0
+    cpu_ms = (time.process_time() - c0) * 1000.0
+
+    stats = {
+        "preset": key,
+        "scale": scale,
+        "numDisparities": cfg["numDisparities"],
+        "wall_ms": wall_ms,
+        "cpu_ms": cpu_ms,
+        "valid_coverage_pct": compute_valid_coverage(d_out)
+    }
+    return d_out, stats
+
 
