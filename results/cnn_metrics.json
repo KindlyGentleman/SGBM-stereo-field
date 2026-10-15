@@ -2,7 +2,7 @@
   "model_parameters": 1054,
   "epochs": 15,
   "cpu_threads": 2,
-  "training_time_seconds": 2.2288728000130504,
+  "training_time_seconds": 5.1659226000192575,
   "optimal_classical_threshold": 0.3636363636363636,
   "classical_baseline": {
     "threshold": 0.3636363636363636,
@@ -29,7 +29,7 @@
       "TN": 114
     },
     "samples_evaluated": 246,
-    "inference_time_s": 0.006321299995761365,
-    "inference_ms_per_patch": 0.02569634144618441
+    "inference_time_s": 0.010874600033275783,
+    "inference_ms_per_patch": 0.04420569119217798
   }
 }

@@ -435,7 +435,8 @@ def sweep_patch_candidate_disparities(
 def run_cnn_experiment(
     epochs: int = 15,
     num_threads: int = 2,
-    results_dir: str = "results"
+    results_dir: str = "results",
+    save_json: bool = True
 ) -> Dict[str, Any]:
     """Execute complete CNN educational patch correspondence experiment."""
     out_dir = Path(results_dir)
@@ -501,9 +502,10 @@ def run_cnn_experiment(
         "classical_baseline": classical_test_metrics,
         "tiny_cnn": cnn_test_metrics
     }
-    metrics_json = out_dir / "cnn_metrics.json"
-    with open(metrics_json, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    if save_json:
+        metrics_json = out_dir / "cnn_metrics.json"
+        with open(metrics_json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
 
     # Save model weights and sample test patches for visualization script
     torch.save(model.state_dict(), str(out_dir / "tiny_cnn.pt"))

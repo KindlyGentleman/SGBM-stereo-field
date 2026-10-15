@@ -1,10 +1,11 @@
 {
-  "timestamp": "2026-10-16T01:29:59.059880",
+  "timestamp": "2026-10-16T02:04:17.008447",
   "platform": "Windows-11-10.0.22631-SP0",
   "python_version": "3.13.7",
   "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
   "opencv_version": "5.0.0",
   "numpy_version": "2.5.3",
+  "cv2_threads": 16,
   "torch_version": "2.8.0+cpu",
-  "torch_cpu_threads": 10
+  "torch_cpu_threads": 2
 }

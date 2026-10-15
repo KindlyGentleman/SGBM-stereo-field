@@ -1,0 +1,108 @@
+{
+  "pipeline_presets": {
+    "FAST": {
+      "scale": 0.5,
+      "numDisparities": 80,
+      "blockSize": 5,
+      "P1": 80,
+      "P2": 640,
+      "disp12MaxDiff": 1,
+      "uniquenessRatio": 10,
+      "speckleWindowSize": 100,
+      "speckleRange": 2,
+      "mode": 2,
+      "use_wls": false,
+      "filter": "median_valid",
+      "target_fps": 30
+    },
+    "BALANCED": {
+      "scale": 0.5,
+      "numDisparities": 80,
+      "blockSize": 5,
+      "P1": 80,
+      "P2": 640,
+      "disp12MaxDiff": 1,
+      "uniquenessRatio": 10,
+      "speckleWindowSize": 100,
+      "speckleRange": 2,
+      "mode": 2,
+      "use_wls": true,
+      "wls_lambda": 4000.0,
+      "wls_sigma": 1.2,
+      "filter": "wls",
+      "target_fps": 15
+    },
+    "QUALITY": {
+      "scale": 1.0,
+      "numDisparities": 160,
+      "blockSize": 7,
+      "P1": 150,
+      "P2": 1200,
+      "disp12MaxDiff": 1,
+      "uniquenessRatio": 10,
+      "speckleWindowSize": 100,
+      "speckleRange": 2,
+      "mode": 2,
+      "use_wls": true,
+      "wls_lambda": 8000.0,
+      "wls_sigma": 1.5,
+      "filter": "wls",
+      "target_fps": 3
+    }
+  },
+  "benchmarked_performance": {
+    "resolutions": {
+      "720p": {
+        "scale": 1.0,
+        "width": 1280,
+        "height": 720,
+        "num_disparities": 160,
+        "mean_ms": 589.8122300044633,
+        "std_ms": 122.59990069993454,
+        "fps": 1.6954548399113945
+      },
+      "360p": {
+        "scale": 0.5,
+        "width": 640,
+        "height": 360,
+        "num_disparities": 80,
+        "mean_ms": 72.6931499899365,
+        "std_ms": 13.422546871149605,
+        "fps": 13.756454358332773
+      },
+      "180p": {
+        "scale": 0.25,
+        "width": 320,
+        "height": 180,
+        "num_disparities": 48,
+        "mean_ms": 14.117359992815182,
+        "std_ms": 1.8708631068694463,
+        "fps": 70.83477367644765
+      }
+    },
+    "threads": {
+      "threads_1": 183.3775500068441,
+      "threads_2": 165.84724999847822,
+      "threads_4": 100.48348000273108,
+      "threads_8": 97.30001000571065,
+      "threads_16": 98.5887500224635
+    },
+    "presets": {
+      "FAST": {
+        "mean_ms": 84.84684999566525,
+        "std_ms": 8.37858846726143,
+        "fps": 11.785941376151136
+      },
+      "BALANCED": {
+        "mean_ms": 256.4536300022155,
+        "std_ms": 43.03818801402763,
+        "fps": 3.8993403992423934
+      },
+      "QUALITY": {
+        "mean_ms": 1328.4727299993392,
+        "std_ms": 90.43527587069279,
+        "fps": 0.7527440928354603
+      }
+    }
+  }
+}
