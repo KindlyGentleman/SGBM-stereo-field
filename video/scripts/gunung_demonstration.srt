@@ -1,0 +1,31 @@
+1
+00:00:00,000 --> 00:00:03,000
+Real-World Outdoor Stereo Transfer: From Benchmark to Volcanic Terrain.
+
+2
+00:00:03,000 --> 00:00:08,000
+Examining raw capture from Gunung stereo collection: 28.8 pixel median vertical misalignment.
+
+3
+00:00:08,000 --> 00:00:13,000
+Calibrated rectification using camera intrinsics reduces vertical residual to 2.4 pixels.
+
+4
+00:00:13,000 --> 00:00:18,000
+Cross-domain transfer: G1 Middlebury-optimized model reduces photometric warp error by 8.1 percent.
+
+5
+00:00:18,000 --> 00:00:23,000
+Physical region-of-interest diagnostics: sky saturation, building edges, grass foliage, and gravel.
+
+6
+00:00:23,000 --> 00:00:27,000
+Target adaptation: extended search range recovers near-field rocks; consistency filtering eliminates outliers.
+
+7
+00:00:27,000 --> 00:00:32,000
+Calibrated 3D metric reconstruction generates 127,000 valid points with physical depth from 0.6m to 35m.
+
+8
+00:00:32,000 --> 00:00:36,000
+Research conclusion: scientific rigor and geometric calibration are essential for real-world stereo transfer.

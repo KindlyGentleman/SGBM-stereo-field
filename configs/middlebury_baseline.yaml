@@ -1,0 +1,54 @@
+# Middlebury Baseline Configuration
+dataset:
+  root_dir: "data/middlebury/MiddEval3/trainingQ"
+  split_name: "trainingQ"
+  resolution: "quarter" # Q resolution: approx 720x497 to 740x500
+
+splits:
+  dev_scenes:
+    - "Adirondack"
+    - "Motorcycle"
+    - "MotorcycleE"
+    - "Pipes"
+    - "Playtable"
+    - "PlaytableP"
+    - "Recycle"
+    - "Vintage"
+  val_scenes:
+    - "Piano"
+    - "PianoL"
+    - "Playroom"
+    - "Teddy"
+  heldout_scenes:
+    - "Jadeplant"
+    - "Shelves"
+    - "ArtL"
+
+# Baseline default OpenCV parameters (G0)
+stereo_bm:
+  numDisparities: 64
+  blockSize: 15
+  preFilterCap: 31
+  textureThreshold: 10
+  uniquenessRatio: 15
+  speckleWindowSize: 100
+  speckleRange: 32
+  disp12MaxDiff: 1
+  minDisparity: 0
+
+stereo_sgbm:
+  minDisparity: 0
+  numDisparities: 64
+  blockSize: 5
+  P1: 600
+  P2: 2400
+  disp12MaxDiff: 1
+  preFilterCap: 63
+  uniquenessRatio: 10
+  speckleWindowSize: 100
+  speckleRange: 32
+  mode: 2 # cv2.STEREO_SGBM_MODE_SGBM_3WAY
+
+metrics:
+  bad_thresholds: [1.0, 2.0, 3.0]
+  primary_threshold: 2.0

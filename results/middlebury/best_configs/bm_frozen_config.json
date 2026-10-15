@@ -1,0 +1,26 @@
+{
+  "G0_default": {
+    "numDisparities": 64,
+    "blockSize": 15,
+    "preFilterCap": 31,
+    "textureThreshold": 10,
+    "uniquenessRatio": 15,
+    "speckleWindowSize": 100,
+    "speckleRange": 32,
+    "disp12MaxDiff": 1,
+    "minDisparity": 0
+  },
+  "G1_optimized": {
+    "numDisparities": 64,
+    "blockSize": 9,
+    "preFilterCap": 63,
+    "textureThreshold": 10,
+    "uniquenessRatio": 5,
+    "speckleWindowSize": 100,
+    "speckleRange": 32,
+    "disp12MaxDiff": 1,
+    "minDisparity": 0
+  },
+  "G2_preprocessing": "gray",
+  "dev_bad_2_0": 38.832299859970895
+}

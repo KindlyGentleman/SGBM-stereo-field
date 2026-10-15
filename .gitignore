@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+env/
+venv/
+
+# Large Datasets & Archives
+data/middlebury/MiddEval3/
+data/middlebury/*.zip
+data/gunung/
+
+# Video intermediate frames
+video/frames/
+
+# LaTeX compilation intermediates
+paper/*.aux
+paper/*.log
+paper/*.bbl
+paper/*.blg
+paper/*.out
+paper/*.synctex.gz

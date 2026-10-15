@@ -1,0 +1,32 @@
+{
+  "G0_default": {
+    "minDisparity": 0,
+    "numDisparities": 64,
+    "blockSize": 5,
+    "P1": 600,
+    "P2": 2400,
+    "disp12MaxDiff": 1,
+    "preFilterCap": 63,
+    "uniquenessRatio": 10,
+    "speckleWindowSize": 100,
+    "speckleRange": 32,
+    "mode": 2,
+    "mode_name": "3WAY"
+  },
+  "G1_optimized": {
+    "minDisparity": 0,
+    "numDisparities": 64,
+    "blockSize": 7,
+    "P1": 150,
+    "P2": 1200,
+    "disp12MaxDiff": 1,
+    "preFilterCap": 63,
+    "uniquenessRatio": 10,
+    "speckleWindowSize": 100,
+    "speckleRange": 2,
+    "mode": 2,
+    "mode_name": "3WAY"
+  },
+  "G2_preprocessing": "hist_match",
+  "dev_bad_2_0": 27.726122044577316
+}
