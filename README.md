@@ -1,102 +1,176 @@
 # Playing with Stereo Matching
 
-A scientific notebook investigating how far classical stereo matching (StereoSGBM and edge-aware filtering) can go on four rugged outdoor terrains after physical camera calibration, validated against Middlebury ground truth and registered Intel RealSense reference depth.
+*A small experiment exploring how stereo cameras estimate depth, how classical matching algorithms work, and what a tiny CNN can learn from image patches.*
 
-![Stereo matching evolution across four mountain terrains](assets/stereo_loop.gif)
+![Stereo correspondence under changing conditions](assets/stereo_loop.gif)
 
-## Why stereo gets difficult outdoors
+## What I wanted to understand
 
-Deep neural networks dominate modern stereo benchmarks, but their heavy compute and memory footprint make them impractical for small embedded robots and low-power field platforms. Classical algorithms like Semi-Global Block Matching (StereoSGBM) run deterministically on a standard CPU with minimal memory.
+Estimating 3D depth from two 2D camera images is one of the foundational problems in computer vision. When two parallel cameras view the same three-dimensional scene from slightly different horizontal vantage points, objects shift horizontally in each image plane depending on how far they are from the camera. Nearby objects shift by a large distance; distant objects shift by a small distance.
 
-On paper, SGBM requires only two conditions: collinear horizontal scanlines and roughly Lambertian reflectance. In unstructured volcanic environments, nature refuses to cooperate. Solar glare saturates sensors, wind-blown shrubs create micro-occlusions, volcanic gravel repeats fine texture patterns, and mechanical vibration knocks dual cameras out of collinear alignment. I wanted to see how far classical stereo reconstruction could be pushed using real camera calibration, sequential tuning, and edge-preserving filtering, and where classical matching hits fundamental physical limits.
+Modern depth estimation is dominated by large neural networks trained on millions of parameters. However, the fundamental physical problem has not changed: finding which pixel in the right camera corresponds to a given pixel in the left camera.
 
-## The cameras needed calibration first
+I wanted to build a minimal, visual notebook to answer four specific questions:
+1. What mathematical relationship turns horizontal pixel shifts into metric depth?
+2. How do classical block matching (StereoBM) and semi-global matching (StereoSGBM) work, and where do they fail?
+3. How vulnerable are classical stereo matchers to brightness, contrast, noise, and non-linear sensor response?
+4. What can a tiny convolutional neural network (CNN) with roughly 1,000 parameters learn about image patches, and does it actually outperform a simple hand-designed difference rule?
 
-Before touching matching parameters, I inspected the camera geometry. Running feature matching (ORB with RANSAC fundamental matrix estimation) on raw image pairs from the Gunung collection revealed a severe physical misalignment: a median vertical correspondence displacement of **28.0 px** in `puncakTinggi`. Standard stereo algorithms search strictly along horizontal scanlines ($y_L = y_R$). With a 28 px vertical jump, matching failed immediately.
+## How two images become depth
 
-![Stereo geometry, rectification verification, and CPU pipeline architecture](assets/fig01_stereo_geometry.png)
+Consider two idealized pinhole cameras mounted on a shared horizontal rail. Both cameras share the same focal length $f$ (measured in pixels) and identical optical axes pointing perpendicular to the camera baseline $B$ (the physical distance between the two optical centers $O_L$ and $O_R$).
 
-I loaded the physical calibration archive (`stereo_params_advanced.npz`) containing the camera matrices, distortion coefficients, rotation matrix $R$, and translation vector $T$ ($B = 97.50$ mm baseline, $f \approx 964.7$ px). Using `cv2.stereoRectify` and `cv2.initUndistortRectifyMap`, I remapped the dual image planes into collinear epipolar alignment.
+![Rectified stereo camera geometry and triangulation](assets/fig01_stereo_geometry.png)
+*Figure 1: Rectified pinhole stereo geometry. A 3D point $P(X, Y, Z)$ projects to pixel coordinates $x_L$ and $x_R$ on parallel image planes separated by baseline $B$. [Vector PDF](assets/fig01_stereo_geometry.pdf)*
 
-Calibrated rectification collapsed the median vertical displacement from **28.0 px down to 2.1 px** (90th percentile: 3.6 px) on `puncakTinggi`, and down to **1.0 px** on `tanggaBiru` and `tanggaKuning`. Only after this geometric correction could horizontal stereo matching succeed.
+Because the cameras are horizontally aligned and free of relative tilt (epipolar rectification), any 3D point $P(X, Y, Z)$ projects to the exact same vertical scanline in both views:
 
-## From Middlebury to the mountain
+$$y_L = y_R$$
 
-To benchmark the pipeline fairly, I used two distinct domains: the controlled Middlebury 2014 indoor benchmark (with structured-light ground truth) and the real-world outdoor Gunung dataset.
+The horizontal positions, however, differ:
 
-![Cross-dataset pipeline validation on Middlebury and Gunung](assets/fig02_middlebury_gunung.png)
+$$x_L = f \frac{X}{Z} + c_x, \qquad x_R = f \frac{X - B}{Z} + c_x$$
 
-On Middlebury (Row 1), ground truth is measured in sub-pixel disparity. On Gunung (Row 2), the physical world requires metric depth in meters ($Z = \frac{f \cdot B}{d}$). The calibrated classical pipeline transferred reliably from indoor benchmarks to outdoor volcanic terrain, producing sharp contours while exposing invalid sky regions.
+Subtracting the two horizontal coordinates yields the stereo disparity $d$:
 
-## Why my first disparity maps looked wrong
+$$d = x_L - x_R = \frac{f \cdot B}{Z}$$
 
-My earliest outdoor reconstruction attempts produced four severe artifacts:
+Disparity is measured in pixels and varies inversely with depth. Inverting this relation yields the distance to the point in meters:
 
-1. **Near-field truncation:** The nominal 128 disparity levels at $1280 \times 720$ only represented objects down to $Z \approx 0.70$ m. Boulders and gravel within arms reach simply vanished from the disparity map.
-2. **Sky plane hallucination:** In over-exposed sky (where 16.8% of pixels exceed intensity 250), unconstrained matching assigned arbitrary disparities to featureless white pixels, which smoothing filters then diffused into solid walls.
-3. **Boundary halo corruption:** Applying standard bilateral filtering directly to raw floating-point disparity averaged zero-valued invalid sentinels with positive foreground disparities. This created a blurry sludge border around every rock.
-4. **Consistency check false rejections:** OpenCV `createRightMatcher` returns negative disparities scaled by 16. Inverting coordinates without handling the sign convention caused 95% of valid matches to be falsely rejected.
+$$Z = \frac{f \cdot B}{d}$$
 
-Fixing these issues required setting signed masks before filtering, enforcing an explicit disparity search range of 160 levels ($Z_{\min} \approx 0.56$ m), and stripping low-confidence regions before edge-aware smoothing.
+When calibrated stereo cameras produce rectified images, the 2D search for corresponding points collapses into a 1D search strictly along horizontal scanlines.
 
-## Does edge preservation help?
+## First, a hand-designed matching cost
 
-I evaluated four key filter configurations under identical frozen SGBM inputs across both Middlebury and Gunung:
+Before running large solvers, consider how a single pixel finds its match. For a reference pixel $(x_L, y)$ in the left image, its true physical counterpart must reside at $(x_L - d, y)$ in the right image for some unknown non-negative disparity $d \ge 0$.
 
-![Filter comparison across Middlebury and Gunung](assets/fig03_filters.png)
+Comparing individual pixels is sensitive to sensor noise. Instead, we extract a small $K \times K$ square window around $(x_L, y)$ and slide a candidate window along the same scanline in the right image. At each candidate disparity $d$, we measure similarity using the Sum of Absolute Differences (SAD):
 
-- **F0: Raw SGBM:** Ground baseline. Middlebury Bad-2.0: 29.09%, MAE: 1.27 px. Gunung median depth error: 0.055 m (5.5 cm) on 19.9% reference coverage.
-- **F1: Legacy Bilateral Filter:** The buggy implementation. Blurring zeros corrupted boundaries, inflating Middlebury Bad-2.0 to 34.22% and more than doubling Gunung depth MAE from 0.308 m to 0.764 m.
-- **F2: Validity-Aware Median Filter:** Restricting a 3x3 median blur strictly to valid pixels reduced Middlebury MAE to 1.24 px without boundary halo artifacts, while running in 2 ms.
-- **F5: Standard Disparity WLS Filter:** Using `cv2.ximgproc.createDisparityWLSFilter` ($\lambda = 8000$, $\sigma = 1.5$) snapped boundaries to physical object contours. Valid coverage on Gunung almost doubled from 19.9% to 37.6% with a median depth error of only 0.102 m (10.2 cm).
+$$\mathrm{SAD}(d) = \sum_{u=-k}^k \sum_{v=-k}^k |I_L(x_L + u, y + v) - I_R(x_L - d + u, y + v)|$$
 
-## Checking against real depth
+where $k = (K - 1) / 2$. The candidate disparity that produces the lowest SAD cost is chosen as the estimated disparity:
 
-To validate the outdoor reconstructions against metric ground truth, I inspected the Intel RealSense D435i depth recordings (`depth_0000.npz`) accompanying each Gunung capture.
+$$d^* = \arg\min_d \mathrm{SAD}(d)$$
 
-Using SIFT feature correspondences between RealSense RGB ($640 \times 480$) and rectified stereo left ($1280 \times 720$), I solved for the rigid Euclidean extrinsics $(R, T)$ via PnP RANSAC. The physical translation converged to $T \approx [-1.5\text{ cm}, -3.8\text{ cm}, -1.5\text{ cm}]$, matching the camera mount on the rigid rig:
+On a textured surface, the SAD curve drops to a sharp minimum at the true physical disparity. However, in regions lacking texture (such as a plain wall or untextured surface), the SAD curve becomes flat and ambiguous: multiple candidate disparities yield almost identical costs.
 
-- **puncakTinggi:** 106 inliers, median reprojection error 1.25 px. Over 140,638 jointly valid pixels ($Z < 4.0$ m), the median metric depth error was **0.083 m (8.3 cm)**, with 77.9% of predictions within $\delta < 1.25$.
-- **tanggaBiru:** 77 inliers, median reprojection error 0.73 px. Median depth error was **0.151 m (15.1 cm)**.
-- **tanggaKuning:** 32 inliers, median reprojection error 1.19 px. Median depth error was **0.135 m (13.5 cm)**.
-- **puncakWarung:** Registration was intentionally omitted. Scene features reside at distances beyond 15 meters, where RealSense active IR stereo cannot provide reliable depth. Following scientific protocol, target depth accuracy is not fabricated for this terrain.
+## From block matching to semi-global matching
 
-## CPU optimization and the Pareto frontier
+Local block matching (OpenCV `StereoBM`) computes window-based similarity independently for every pixel. While fast, it suffers from two major limitations:
+1. **Aperture ambiguity:** In untextured or repeating regions, local windows lack distinct features.
+2. **Edge fattening:** Fixed square windows straddling depth boundaries mix foreground and background disparities, blurring object contours.
 
-Reconstructing 720p stereo on an embedded CPU is computationally demanding. Profiling the pipeline at native $1280 \times 720$ revealed the bottleneck: Left SGBM (167.5 ms, 40%) and Right SGBM (160.4 ms, 39%) account for 79% of all execution time. WLS filtering takes 54.1 ms (13%), while image remapping takes only 4.5 ms (1%).
+Semi-Global Block Matching (StereoSGBM) addresses this by formulating stereo as an energy minimization problem over the entire image:
 
-![Accuracy-coverage-CPU Pareto frontier, multiscale breakdown, and thread scaling](assets/fig04_cpu_tradeoffs.png)
+$$E(D) = \sum_p C(p, D_p) + \sum_{q \in N_p} P_1 \cdot \mathbb{I}[|D_p - D_q| = 1] + \sum_{q \in N_p} P_2 \cdot \mathbb{I}[|D_p - D_q| > 1]$$
 
-Operating at half resolution ($640 \times 360$ with 80 disparity levels) reduces algorithmic volume by $8\times$, slashing latency from **414.4 ms to 53.1 ms** (a **7.8x speedup**) with virtually zero loss in metric depth accuracy (10.1 cm vs 10.2 cm median error).
+where $C(p, D_p)$ is the matching cost (based on Birchfield-Tomasi pixel sampling), $P_1$ penalizes small disparity steps (slanted surfaces), and $P_2$ penalizes large disparity jumps (depth discontinuities). StereoSGBM approximates 2D global MRF optimization by aggregating costs along 1D paths (typically 3, 5, or 8 directional paths) using dynamic programming.
 
-Based on these measurements, I formulated three Pareto-optimal operating points:
+![Classical stereo matching on a layered synthetic scene](assets/fig02_classical_matching.png)
+*Figure 2: Classical stereo matching evaluated on a 3-layer synthetic scene with occlusions and a low-texture patch. Panels (a-b) show left and right views. Panel (c) shows reference disparity with occlusions excluded. Panels (d-e) show StereoBM and StereoSGBM reconstructions. Panel (f) plots spatial error. Panel (g) shows the educational SAD cost curve for foreground pixel P(110, 100). [Vector PDF](assets/fig02_classical_matching.pdf)*
 
-| Preset | Target FPS | Scale | numDisp | Filter | Mid Dev Bad-2.0 | Gunung Med Err | Latency (ms) | Peak RAM |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FAST** | 30 FPS | 0.5x | 80 | Median Valid | 28.42% | **10.1 cm** | **34.4 ms** | 12.3 MB |
-| **BALANCED** | 15 FPS | 0.5x | 80 | Multiscale WLS | 29.35% | 12.7 cm | **66.8 ms** | 10.1 MB |
-| **QUALITY** | 3 FPS | 1.0x | 160 | Full WLS | 29.66% | **10.2 cm** | 332.3 ms | 10.5 MB |
+To evaluate both algorithms objectively, I constructed a 3-layer synthetic test scene ($320 \times 240$ pixels) containing:
+- A far background ($d = 8$ px) with smooth gradient texture
+- A middle-ground surface ($d = 18$ px) with a flat untextured patch
+- A near foreground rectangular object ($d = 32$ px)
+- Exact geometric occlusion tracking (pixels occluded in the right view are marked invalid)
 
-Furthermore, thread scaling experiments on a 16-core CPU showed that SGBM scales well up to 4 threads, yields diminishing returns at 8 threads (797 ms), and plateaus at 16 threads (760 ms) due to memory bus saturation and cache contention.
+| Algorithm | Bad@2.0 Error (%) | Bad@1.0 Error (%) | MAE (px) | Coverage (%) | CPU Latency (ms) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **StereoBM** | 2.48% | 2.49% | 0.477 px | 77.6% | **3.82 ms** |
+| **StereoSGBM** | **1.15%** | **1.20%** | **0.172 px** | **86.0%** | 5.59 ms |
+| **StereoSGBM + CLAHE** | 1.16% | 1.21% | 0.184 px | **86.1%** | 5.75 ms |
 
-## Four terrains, different failure modes
+StereoSGBM achieves less than half the bad-pixel rate of StereoBM (1.15% vs 2.48%) while maintaining higher valid coverage (86.0% vs 77.6%). Its path-based smoothness penalty prevents arbitrary disparity assignments across the untextured patch in the middle ground, whereas StereoBM rejects those pixels as ambiguous.
 
-Evaluating across all four terrains confirmed that outdoor reconstruction challenges vary significantly by geometry and lighting:
+## When lighting changes
 
-![Cross-terrain performance and disparity maps across all four Gunung scenes](assets/fig05_four_terrains.png)
+In real-world deployment, dual cameras rarely experience identical illumination. Lenses have vignette variations, sensors drift in analog gain, and sunlight creates dynamic shadows.
 
-1. **puncakTinggi (Summit Ridge):** Strongest quantitative performance (median depth error 6.3 cm, 84.4% within $\delta < 1.25$), but 16.8% saturated sky requires explicit masking to avoid flying planar artifacts.
-2. **puncakWarung (Roadside Shelter):** Complex roadside shelter with 56.5% coverage. Note: RealSense reference depth is omitted because background distances exceed 15 m. Principal failures: deep shadow occlusions under the tin overhang.
-3. **tanggaBiru (Blue Stairway):** High consistency and reliable railing reconstruction (median depth error 15.9 cm, 67.9% within $\delta < 1.25$), but thin railing bars cause micro-discontinuities.
-4. **tanggaKuning (Yellow Stairway):** Repeating metal railing bars create periodic correlation ambiguities, but step edges achieve 8.0 cm median depth error and 83.4% within $\delta < 1.25$.
+I evaluated StereoBM, StereoSGBM, and StereoSGBM with Contrast Limited Adaptive Histogram Equalization (CLAHE) under five controlled perturbations applied to the right camera image while holding scene geometry constant:
+1. **Clean baseline:** No photometric distortion.
+2. **Brightness imbalance:** Additive shift of $\pm 30$ intensity levels.
+3. **Low contrast:** Multiplicative scaling of contrast down to $0.5\times$.
+4. **Gaussian noise:** Zero-mean noise with standard deviation $\sigma = 15$.
+5. **Non-linear gamma:** Sensor response curve with $\gamma = 1.6$.
+
+![Reconstruction error and coverage across photometric perturbations](assets/fig03_photometric_robustness.png)
+*Figure 3: Photometric robustness comparison on the layered scene. (a) Bad@2.0 error rate (lower is better). (b) Valid prediction coverage (higher is better). (c) Disparity Mean Absolute Error in pixels. [Vector PDF](assets/fig03_photometric_robustness.pdf)*
+
+Key findings from the perturbation study:
+- **Noise breaks window matching:** Under additive Gaussian noise ($\sigma = 15$), StereoBM coverage collapses from 77.6% down to 12.91%, with error rising to 9.72%. StereoSGBM retains 79.53% coverage with 4.23% error due to path aggregation.
+- **When CLAHE helps:** Under low contrast ($0.5\times$), CLAHE pre-equalization boosts contrast, dropping StereoSGBM error from 1.49% to 1.18% and raising coverage to 86.15%.
+- **When CLAHE hurts:** Under Gaussian noise, CLAHE amplifies high-frequency noise grains, worsening StereoSGBM error from 4.23% to 7.45%. Normalization filters must not be applied blindly to every input condition.
+
+## What is a convolutional neural network?
+
+Before training a neural network on patches, it is helpful to clarify what a CNN actually computes. A convolutional neural network for image patches is not an impenetrable black box: it is a sequence of sliding linear dot products followed by elementwise non-linear thresholding.
+
+![Architecture of TinyStereoNet and convolution mechanics](assets/fig04_cnn_architecture.png)
+*Figure 4: Educational architecture of TinyStereoNet. Two $15 \times 15$ grayscale patches form a 2-channel input tensor. Two small $3 \times 3$ convolution layers extract features, Global Average Pooling condenses spatial dimensions, and a 2-unit linear layer outputs match probabilities. [Vector PDF](assets/fig04_cnn_architecture.pdf)*
+
+Core components of the implemented network:
+- **Convolution:** A small 2D array of learned numbers (a kernel) slides across the input image. At each spatial position, it computes the elementwise product with the underlying image patch and sums the results into a single number.
+- **Kernel:** The set of learned weight coefficients. PyTorch implements this operation as 2D cross-correlation by convention.
+- **Feature Map:** The 2D array produced by sliding a kernel across the input.
+- **ReLU (Rectified Linear Unit):** An activation function defined as $f(x) = \max(0, x)$. It introduces non-linearity, allowing the network to learn decision boundaries that linear combinations cannot represent.
+- **Global Average Pooling (GAP):** A spatial reduction operation that computes the mean of every feature map, collapsing an $H \times W$ spatial map into a single scalar value per channel.
+- **Logits:** The unnormalized raw scores $[z_0, z_1]$ produced by the final linear layer.
+- **Loss:** A mathematical penalty comparing predicted probabilities against ground-truth labels. We use Cross-Entropy Loss: $\mathcal{L} = -\log P(y)$.
+- **Backpropagation:** Computing partial derivatives of the loss with respect to every weight using the chain rule, which Adam then uses to update parameters.
+- **Epoch:** One complete training pass through the entire training dataset.
+- **Generalization:** The model ability to accurately classify unseen patch pairs sampled from novel random seeds.
+
+The architecture implemented in `cnn.py` has exactly **1,054 parameters**:
+- Conv1: $2 \text{ inputs} \times 8 \text{ filters} \times (3 \times 3) + 8 \text{ biases} = 152$ parameters
+- Conv2: $8 \text{ inputs} \times 12 \text{ filters} \times (3 \times 3) + 12 \text{ biases} = 876$ parameters
+- Linear: $12 \text{ inputs} \times 2 \text{ outputs} + 2 \text{ biases} = 26$ parameters
+- Total: $152 + 876 + 26 = 1,054$ parameters
+
+## Can a tiny CNN learn correspondence?
+
+To test what a 1,054-parameter network can learn, I set up a binary patch classification experiment:
+- **Input:** Two $15 \times 15$ grayscale patches stacked along the channel axis (shape: $2 \times 15 \times 15$).
+- **Positive pairs (Label 1):** A left patch and the geometrically true matching right patch at $(x_L - d, y)$.
+- **Negative pairs (Label 0):** A left patch paired with an incorrect candidate patch ($|d' - d| \ge 2$ or a different location), sampled under identical noise and brightness statistics.
+- **Data partition:** Datasets are partitioned strictly by scene random seed to eliminate data leakage:
+  - Training: Seeds 100 to 109 (968 balanced patch pairs)
+  - Validation: Seeds 200 to 203 (198 balanced patch pairs)
+  - Held-out test: Seeds 300 to 304 (246 balanced patch pairs)
+
+![Tiny CNN training progression and validation accuracy](assets/fig05_cnn_learning.png)
+*Figure 5: Training progression of TinyStereoNet over 15 epochs on CPU. (a) Cross-entropy loss curve. (b) Training and validation accuracy relative to the classical MAD baseline. Final held-out test accuracy is evaluated strictly after model selection. [Vector PDF](assets/fig05_cnn_learning.pdf)*
+
+Training on a standard CPU takes **2.42 seconds** for 15 epochs (roughly 161 ms per epoch). Validation accuracy climbs steadily from 50.0% (random guess) up to 94.9%, confirming that two tiny convolution layers can extract discriminative cross-channel spatial relationships.
+
+## Does learning beat a simple matching rule?
+
+To place the CNN performance in context, I implemented a hand-designed baseline: Mean Absolute Difference (MAD). It computes the mean pixel difference across both normalized patches:
+
+$$\mathrm{MAD}(P_L, P_R) = \frac{1}{15 \times 15} \sum_{u=1}^{15} \sum_{v=1}^{15} |P_L(u, v) - P_R(u, v)|$$
+
+A decision threshold $\tau$ was selected using validation data only ($\tau^* = 0.364$). Any pair with $\mathrm{MAD} < \tau^*$ is classified as a match (1), and nonmatch (0) otherwise. Both the classical baseline and TinyStereoNet were then evaluated on the untouched held-out test set (246 samples).
+
+![Patch comparison, candidate disparity scan, and confusion matrices](assets/fig06_classical_vs_cnn.png)
+*Figure 6: Classical MAD baseline versus Tiny CNN on held-out test data. (a) Positive and negative test patch pairs. (b) Disparity scan along an epipolar line comparing CNN match probability with SAD cost. (c-d) Test confusion matrices for classical MAD and TinyStereoNet. [Vector PDF](assets/fig06_classical_vs_cnn.pdf)*
+
+| Method | Test Accuracy | Precision | Recall | F1 Score | CPU Latency / Patch | Trainable Params |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Classical MAD** | 91.1% | 88.0% | 95.1% | 91.4% | **0.001 ms** | **0 (hand-designed)** |
+| **Tiny CNN (Learned)** | **94.3%** | **92.9%** | **95.9%** | **94.4%** | 0.023 ms | 1,054 |
+
+The tiny CNN improves accuracy over the classical baseline by 3.2 percentage points (94.3% vs 91.1%), reducing false positives from 16 down to 9 on the test set.
+
+However, notice the computational cost: the classical difference rule requires zero training, zero learned weights, and executes more than 20 times faster on CPU. For simple patch correspondence tasks under clean conditions, a hand-designed similarity metric is remarkably capable. Machine learning adds value when geometric deformations, subtle subpixel misalignments, or complex photometric non-linearities must be learned from data.
 
 ## What I learned
 
-1. **Geometry matters before filtering:** Tuning matching parameters on unrectified imagery with 28 px vertical error was useless. Calibrated epipolar rectification accounted for almost all initial gains.
-2. **Multiscale SGBM is the ultimate CPU optimization:** Halving spatial resolution drops latency from 414 ms to 53 ms (7.8x speedup) while maintaining 10 cm metric depth accuracy.
-3. **Smooth disparity is not necessarily accurate:** Filters that fill untextured sky or blur invalid sentinels look visually pleasing but destroy metric accuracy.
-4. **Missing predictions matter:** Completeness-aware metrics prevent matchers from gaming accuracy scores by rejecting difficult pixels.
-5. **Active IR reference sensors have strict range envelopes:** Intel RealSense D435i provides verified sub-decimeter ground truth up to 4 meters, but cannot evaluate distant outdoor mountain scenes beyond 10 meters.
+1. **Geometry dictates performance first:** Correct horizontal epipolar alignment ($y_L = y_R$) is a strict precondition for stereo matching. No amount of parameter tuning or neural capacity can compensate for unrectified vertical camera misalignment.
+2. **Semi-global aggregation resolves local ambiguities:** StereoBM fails in untextured regions because local square windows lack distinctive gradients. StereoSGBM path-based energy minimization enforces smoothness across flat areas without blurring sharp object boundaries.
+3. **Contrast filters are double-edged swords:** CLAHE improves stereo matching under low contrast, but amplifies sensor noise under high-noise conditions. Filtering decisions must be matched to sensor characteristics.
+4. **Missing predictions matter:** Completeness-aware metrics ensure matchers cannot game accuracy scores by rejecting difficult border or low-texture pixels.
+5. **Small networks can learn correspondence:** A 2-layer CNN with only 1,054 parameters achieves 94.3% classification accuracy on held-out patches in 2.4 seconds of CPU training, but a hand-designed MAD baseline achieves 91.1% with zero training time.
 
 ## Reproduce
 
@@ -106,25 +180,23 @@ Evaluating across all four terrains confirmed that outdoor reconstruction challe
 python -m pip install -r requirements.txt
 ```
 
-### Quick Verification (< 2 seconds)
+For optional CNN training:
 
-Runs fast calibration verification, rectified matching, and metrics using the FAST preset:
+```bash
+python -m pip install -r requirements-ml.txt
+```
+
+### Fast Verification (< 1 second)
+
+Runs sanity verification on constant and layered synthetic scenes:
 
 ```bash
 python reproduce.py --quick
 ```
 
-### Component CPU Profiling (~7 seconds)
-
-Profiles remap, left SGBM, right SGBM, WLS, and metric reprojection across scales (720p, 360p, 180p):
-
-```bash
-python reproduce.py --profile
-```
-
 ### Full Benchmark Experiment
 
-Runs complete benchmark evaluation of FAST, BALANCED, and QUALITY presets across all Middlebury scenes and all four Gunung terrains:
+Executes the complete classical stereo benchmark across scenes, matchers, and perturbations:
 
 ```bash
 python reproduce.py --full
@@ -132,13 +204,26 @@ python reproduce.py --full
 
 Outputs:
 - `results/metrics.csv`
-- `results/best_params.json`
-- `results/validation.json`
-- `results/pareto_frontier.csv`
+- `results/sample_disparities.npz`
+- `results/sad_profile.json`
+- `results/environment.json`
 
-### Regenerate Visuals
+### Train and Evaluate Tiny CNN
 
-Regenerates all five publication figures and the hero looping GIF:
+Trains TinyStereoNet on CPU and evaluates against the classical baseline on held-out test data:
+
+```bash
+python cnn.py --epochs 15 --threads 2
+```
+
+Outputs:
+- `results/cnn_history.csv`
+- `results/cnn_metrics.json`
+- `results/tiny_cnn.pt`
+
+### Regenerate Visualizations
+
+Generates all publication figures and the hero animated GIF:
 
 ```bash
 python visualize.py
@@ -146,10 +231,11 @@ python visualize.py
 
 Outputs:
 - `assets/fig01_stereo_geometry.png` and `.pdf`
-- `assets/fig02_middlebury_gunung.png` and `.pdf`
-- `assets/fig03_filters.png` and `.pdf`
-- `assets/fig04_cpu_tradeoffs.png` and `.pdf`
-- `assets/fig05_four_terrains.png` and `.pdf`
+- `assets/fig02_classical_matching.png` and `.pdf`
+- `assets/fig03_photometric_robustness.png` and `.pdf`
+- `assets/fig04_cnn_architecture.png` and `.pdf`
+- `assets/fig05_cnn_learning.png` and `.pdf`
+- `assets/fig06_classical_vs_cnn.png` and `.pdf`
 - `assets/stereo_loop.gif`
 
 ### Run Unit Tests
@@ -158,19 +244,20 @@ Outputs:
 python -m pytest -q
 ```
 
-### Custom Data Paths
+### Optional External Datasets
 
-Provide custom paths explicitly if running from another location:
+Evaluate Middlebury 2014 or calibrated outdoor transfer when datasets are available:
 
 ```bash
-python reproduce.py --full --calib path/to/stereo_params.npz --gunung path/to/gunung --middlebury path/to/trainingQ
+python reproduce.py --middlebury path/to/MiddEval3/trainingQ
+python reproduce.py --gunung path/to/gunung --calib path/to/stereo_params.npz
 ```
 
 ## References
 
 - D. Scharstein and R. Szeliski, "A taxonomy and evaluation of dense two-frame stereo correspondence algorithms," *International Journal of Computer Vision*, 47(1-3):7-42, 2002. https://doi.org/10.1023/A:1014573219977
 - H. Hirschmuller, "Stereo processing by semiglobal matching and mutual information," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 30(2):328-341, 2008. https://doi.org/10.1109/TPAMI.2007.1166
+- J. Zbontar and Y. LeCun, "Stereo matching by training a convolutional neural network to compare image patches," *Journal of Machine Learning Research*, 17(1):2287-2318, 2016.
 - D. Scharstein, H. Hirschmuller, et al., "High-resolution stereo datasets with subpixel-accurate ground truth," *German Conference on Pattern Recognition (GCPR)*, 2014. https://vision.middlebury.edu/stereo/data/scenes2014/
 - OpenCV StereoSGBM Documentation: https://docs.opencv.org/4.x/d2/d85/classcv_1_1StereoSGBM.html
-- OpenCV Disparity WLS Filter Tutorial: https://docs.opencv.org/4.x/d3/d14/tutorial_ximgproc_disparity_filtering.html
-- SciencePlots: https://github.com/garrettj403/SciencePlots
+- KindlyGentleman/fft-diffraction: https://github.com/KindlyGentleman/fft-diffraction

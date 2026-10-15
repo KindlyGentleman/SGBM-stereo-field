@@ -1,648 +1,632 @@
-"""Generate all publication figures and animations for Playing with Stereo Matching.
+"""Scientific visualization suite for stereo matching and tiny CNN experiments.
 
-Figures:
-- Figure 1: Stereo Geometry and Calibrated Processing Pipeline (fig01_stereo_geometry.png/.pdf)
-- Figure 2: Cross-Dataset Pipeline Validation (fig02_middlebury_gunung.png/.pdf)
-- Figure 3: Filter Comparison Suite (fig03_filters.png/.pdf)
-- Figure 4: Accuracy-Coverage-CPU Pareto Frontier (fig04_cpu_tradeoffs.png/.pdf)
-- Figure 5: Four-Terrain Evaluation and Failure Analysis (fig05_four_terrains.png/.pdf)
-- Hero Loop GIF: assets/stereo_loop.gif cycling through all four terrains
+Generates IEEE-style publication figures and animations:
+- fig01_stereo_geometry: Vector illustration of rectified stereo geometry and depth.
+- fig02_classical_matching: Layered scene matching (BM vs SGBM vs GT vs Error + SAD profile).
+- fig03_photometric_robustness: Reconstruction accuracy and coverage under perturbations.
+- fig04_cnn_architecture: Educational diagram of TinyStereoNet and convolution mechanics.
+- fig05_cnn_learning: Training loss and accuracy progression vs classical baseline.
+- fig06_classical_vs_cnn: Patch-level comparison, disparity scan, and confusion matrices.
+- stereo_loop.gif: Looping animation of stereo reconstruction across changing conditions.
 """
 
-import sys
+import json
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
+from typing import Dict, Any, List, Optional
 import cv2
-import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from PIL import Image
+import numpy as np
+import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
 
 import stereo
+import cnn
 
-assets_dir = Path("assets")
-assets_dir.mkdir(parents=True, exist_ok=True)
-results_dir = Path("results")
-results_dir.mkdir(parents=True, exist_ok=True)
-
-DEFAULT_CALIB = r"D:\02_Riset\Research Paper\source_code\calibration\calib_params\stereo_params_advanced.npz"
-DEFAULT_GUNUNG = r"D:\02_Riset\Research Paper\source_code\comparison\gunung"
-DEFAULT_MID = r"data/middlebury/MiddEval3/trainingQ"
-
+# Styling defaults
 plt.rcParams.update({
-    "font.size": 10.5,
-    "axes.labelsize": 11.5,
-    "axes.titlesize": 12.0,
-    "xtick.labelsize": 9.5,
-    "ytick.labelsize": 9.5,
-    "legend.fontsize": 9.5,
-    "figure.titlesize": 13.5,
-    "font.family": "sans-serif"
+    "font.family": "serif",
+    "font.size": 9,
+    "axes.labelsize": 10,
+    "axes.titlesize": 10,
+    "xtick.labelsize": 8.5,
+    "ytick.labelsize": 8.5,
+    "legend.fontsize": 8.5,
+    "figure.titlesize": 11,
+    "lines.linewidth": 1.2,
+    "figure.dpi": 300,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight"
 })
 
-K_RECT = np.array([
-    [964.68366, 0.0, 563.89656],
-    [0.0, 964.68366, 366.00543],
-    [0.0, 0.0, 1.0]
-], dtype=np.float64)
-
-K_RS = np.array([
-    [615.0, 0.0, 320.0],
-    [0.0, 615.0, 240.0],
-    [0.0, 0.0, 1.0]
-], dtype=np.float64)
+COLOR_BM = "#4575b4"       # Blue
+COLOR_SGBM = "#d73027"     # Red
+COLOR_SGBM_CLAHE = "#2ca02c"  # Green
+COLOR_CNN = "#7570b3"      # Purple
+COLOR_BASELINE = "#e7298a" # Magenta
 
 
-def generate_fig01_stereo_geometry(raw_l: np.ndarray, raw_r: np.ndarray, rect_l: np.ndarray, rect_r: np.ndarray) -> None:
-    """Generate Figure 1: Stereo Geometry, Epipolar Alignment, and Processing Pipeline."""
-    print("Generating Figure 1: Stereo Geometry and Pipeline...")
-    fig = plt.figure(figsize=(15, 8.5), constrained_layout=True)
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.1])
+def generate_figure_01_geometry(output_dir: Path) -> None:
+    """Generate Figure 1: Rectified stereo camera geometry and metric depth."""
+    fig, ax = plt.subplots(figsize=(7.16, 4.4), dpi=300)
+    ax.set_xlim(-2.0, 9.0)
+    ax.set_ylim(-1.0, 7.5)
+    ax.axis("off")
 
-    # Subplot (a): Epipolar Geometry Diagram
-    ax_geom = fig.add_subplot(gs[0, 0])
-    ax_geom.set_xlim(-1.2, 5.2)
-    ax_geom.set_ylim(-0.8, 4.5)
-    ax_geom.set_aspect("equal")
-    ax_geom.axis("off")
-    ax_geom.set_title("(a) Calibrated Epipolar Stereo Geometry", fontweight="bold")
+    # Optical centers
+    ol_x, ol_y = 0.0, 0.0
+    or_x, or_y = 5.0, 0.0
 
-    # Camera centers
-    cl = np.array([0.0, 0.0])
-    cr = np.array([3.0, 0.0])
-    p_3d = np.array([1.9, 3.8])
-
-    # Baseline arrow
-    ax_geom.annotate("", xy=(3.0, -0.3), xytext=(0.0, -0.3),
-                     arrowprops=dict(arrowstyle="<->", color="navy", lw=2.0))
-    ax_geom.text(1.5, -0.6, "Baseline B = 97.50 mm", color="navy", fontweight="bold", ha="center")
-
-    # Virtual image planes
-    ax_geom.plot([-0.5, 0.7], [1.0, 1.0], color="dimgray", lw=3.0)
-    ax_geom.plot([2.3, 3.5], [1.0, 1.0], color="dimgray", lw=3.0)
-    ax_geom.text(0.1, 1.15, "Left Image Plane", color="black", fontsize=9.0, ha="center")
-    ax_geom.text(2.9, 1.15, "Right Image Plane", color="black", fontsize=9.0, ha="center")
+    # Baseline
+    ax.plot([ol_x, or_x], [ol_y, or_y], "k-", lw=1.8)
+    ax.plot(ol_x, ol_y, "ks", markersize=7)
+    ax.plot(or_x, or_y, "ks", markersize=7)
+    ax.text(ol_x, -0.45, r"$\mathbf{O}_L\,(0, 0)$" + "\nLeft Camera", ha="center", fontsize=9.5)
+    ax.text(or_x, -0.45, r"$\mathbf{O}_R\,(B, 0)$" + "\nRight Camera", ha="center", fontsize=9.5)
+    ax.annotate("", xy=(or_x, -0.15), xytext=(ol_x, -0.15),
+                arrowprops=dict(arrowstyle="<->", color="black", lw=1.2))
+    ax.text(2.5, -0.32, r"Baseline $B$", ha="center", fontsize=9.5, fontweight="bold")
 
     # Optical axes
-    ax_geom.plot([0.0, 0.0], [0.0, 1.0], color="gray", linestyle="--", lw=1.2)
-    ax_geom.plot([3.0, 3.0], [0.0, 1.0], color="gray", linestyle="--", lw=1.2)
-    ax_geom.text(-0.25, 0.5, "f = 964.7 px", color="black", fontsize=8.5, rotation=90)
+    ax.plot([ol_x, ol_x], [ol_y, 6.5], "k--", lw=0.9, alpha=0.5)
+    ax.plot([or_x, or_x], [or_y, 6.5], "k--", lw=0.9, alpha=0.5)
 
-    # Rays to 3D point
-    ax_geom.plot([cl[0], p_3d[0]], [cl[1], p_3d[1]], color="crimson", lw=1.8, linestyle=":")
-    ax_geom.plot([cr[0], p_3d[0]], [cr[1], p_3d[1]], color="royalblue", lw=1.8, linestyle=":")
+    # Image planes at Z = f (f_y = 1.6)
+    f_y = 1.6
+    ax.plot([-1.1, 1.1], [f_y, f_y], color="#1f77b4", lw=2.4)
+    ax.plot([3.9, 6.1], [f_y, f_y], color="#1f77b4", lw=2.4)
+    ax.text(0.0, f_y + 0.18, "Left Image Plane", ha="center", fontsize=9, color="#1f77b4", fontweight="bold")
+    ax.text(5.0, f_y + 0.18, "Right Image Plane", ha="center", fontsize=9, color="#1f77b4", fontweight="bold")
 
-    # Projection points
-    # Ray Left intersection with y=1: x = cl[0] + 1.0 * (p_3d[0] - cl[0]) / p_3d[1]
-    xl = cl[0] + 1.0 * (p_3d[0] - cl[0]) / p_3d[1]
-    xr = cr[0] + 1.0 * (p_3d[0] - cr[0]) / p_3d[1]
-    ax_geom.plot(xl, 1.0, "ro", markersize=6)
-    ax_geom.plot(xr, 1.0, "bo", markersize=6)
-    ax_geom.text(xl + 0.1, 0.85, "u_L", color="crimson", fontweight="bold")
-    ax_geom.text(xr - 0.25, 0.85, "u_R", color="royalblue", fontweight="bold")
+    # Scene point P = (1.8, 5.8)
+    px, py = 1.8, 5.8
+    ax.plot(px, py, "ro", markersize=8)
+    ax.text(px + 0.18, py + 0.15, r"Scene Point $P(X, Y, Z)$", fontsize=10, fontweight="bold", color="darkred")
 
-    # Optical centers dots
-    ax_geom.plot(cl[0], cl[1], "ko", markersize=8)
-    ax_geom.plot(cr[0], cr[1], "ko", markersize=8)
-    ax_geom.text(cl[0] - 0.2, -0.05, "C_L", fontweight="bold")
-    ax_geom.text(cr[0] + 0.1, -0.05, "C_R", fontweight="bold")
+    # Projection rays from optical centers through image planes to P
+    ax.plot([ol_x, px], [ol_y, py], "r-", lw=1.3, alpha=0.85)
+    ax.plot([or_x, px], [or_y, py], "r-", lw=1.3, alpha=0.85)
 
-    # 3D Point P
-    ax_geom.plot(p_3d[0], p_3d[1], "k*", markersize=14)
-    ax_geom.text(p_3d[0] + 0.15, p_3d[1] + 0.1, "P(X, Y, Z)", fontweight="bold")
+    # Projected image coordinates
+    xl_proj = (f_y / py) * px
+    xr_proj = or_x + (f_y / py) * (px - or_x)
 
-    # Formula box
-    formula_text = (
-        r"Disparity: $d = u_L - u_R$" + "\n" +
-        r"Depth: $Z = \frac{f \cdot B}{d}$" + "\n" +
-        r"$f \cdot B = 94.05\ \mathrm{px}\cdot\mathrm{m}$"
+    ax.plot(xl_proj, f_y, "bo", markersize=6)
+    ax.plot(xr_proj, f_y, "bo", markersize=6)
+    ax.text(xl_proj, f_y - 0.35, r"$x_L$", ha="center", fontsize=9.5, color="darkblue", fontweight="bold")
+    ax.text(xr_proj, f_y - 0.35, r"$x_R$", ha="center", fontsize=9.5, color="darkblue", fontweight="bold")
+
+    # Projected displacement (disparity d)
+    ax.plot([xl_proj, xl_proj], [f_y, f_y - 0.55], "b:", lw=0.8)
+    ax.plot([xr_proj, xr_proj], [f_y, f_y - 0.55], "b:", lw=0.8)
+
+    # Focal length f bracket
+    ax.annotate("", xy=(6.5, f_y), xytext=(6.5, 0.0),
+                arrowprops=dict(arrowstyle="<->", color="black", lw=1.1))
+    ax.text(6.65, f_y / 2.0, r"Focal length $f$", va="center", ha="left", fontsize=9)
+
+    # Depth Z bracket
+    ax.annotate("", xy=(-1.5, py), xytext=(-1.5, 0.0),
+                arrowprops=dict(arrowstyle="<->", color="black", lw=1.1))
+    ax.text(-1.65, py / 2.0, r"Metric Depth $Z$", va="center", ha="right", fontsize=9.5, rotation=90)
+
+    # Equations box
+    box_lines = [
+        r"$\mathbf{Rectified\,Scanline\,Geometry}$",
+        r"Horizontal correspondence: $y_L = y_R$",
+        r"Disparity: $d = x_L - x_R$",
+        r"Triangulation: $Z = \frac{f \cdot B}{d}$"
+    ]
+    ax.text(2.5, 3.2, "\n".join(box_lines), ha="center", va="center", fontsize=9.5,
+            bbox=dict(boxstyle="round,pad=0.6", facecolor="#f8f9fa", edgecolor="#b0bec5", lw=1.2))
+
+    fig.savefig(output_dir / "fig01_stereo_geometry.png")
+    fig.savefig(output_dir / "fig01_stereo_geometry.pdf")
+    plt.close(fig)
+    print("Generated Figure 1: fig01_stereo_geometry.png/.pdf")
+
+
+def generate_figure_02_classical(output_dir: Path, data: Dict[str, Any], sad_data: Dict[str, Any]) -> None:
+    """Generate Figure 2: Layered scene classical stereo matching and SAD profile."""
+    fig = plt.figure(figsize=(7.16, 5.2), dpi=300)
+    gs = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.0, 0.9], hspace=0.32, wspace=0.25)
+
+    left = data["layered_left"]
+    right = data["layered_right_clean"]
+    gt = data["layered_gt"]
+    mask = data["layered_mask"]
+    disp_bm = data["layered_clean_stereobm_disp"]
+    disp_sgbm = data["layered_clean_stereosgbm_disp"]
+
+    # Mask invalid regions for GT
+    gt_masked = np.where(mask, gt, np.nan)
+    err_sgbm = np.where(mask & (disp_sgbm > 0), np.abs(disp_sgbm - gt), np.nan)
+
+    # Shared disparity scale [0, 35]
+    vmin, vmax = 0.0, 35.0
+
+    # Panel (a): Left image
+    ax_a = fig.add_subplot(gs[0, 0])
+    ax_a.imshow(left, cmap="gray")
+    ax_a.set_title("(a) Left View $I_L$", fontsize=9.5)
+    ax_a.axis("off")
+    # Mark reference point for SAD profile
+    rx, ry = sad_data["ref_x"], sad_data["ref_y"]
+    ax_a.plot(rx, ry, "r+", markersize=8, markeredgewidth=1.8)
+    ax_a.text(rx + 8, ry - 8, f"P({rx},{ry})", color="red", fontsize=8, fontweight="bold")
+
+    # Panel (b): Right image
+    ax_b = fig.add_subplot(gs[0, 1])
+    ax_b.imshow(right, cmap="gray")
+    ax_b.set_title("(b) Right View $I_R$", fontsize=9.5)
+    ax_b.axis("off")
+
+    # Panel (c): Ground truth disparity
+    ax_c = fig.add_subplot(gs[0, 2])
+    im_c = ax_c.imshow(gt_masked, cmap="viridis", vmin=vmin, vmax=vmax)
+    ax_c.set_title(r"(c) Reference Disparity $d_{\mathrm{gt}}$", fontsize=9.5)
+    ax_c.axis("off")
+
+    # Panel (d): StereoBM disparity
+    ax_d = fig.add_subplot(gs[1, 0])
+    disp_bm_plot = np.where(disp_bm > 0, disp_bm, np.nan)
+    ax_d.imshow(disp_bm_plot, cmap="viridis", vmin=vmin, vmax=vmax)
+    ax_d.set_title("(d) StereoBM Disparity", fontsize=9.5)
+    ax_d.axis("off")
+
+    # Panel (e): StereoSGBM disparity
+    ax_e = fig.add_subplot(gs[1, 1])
+    disp_sgbm_plot = np.where(disp_sgbm > 0, disp_sgbm, np.nan)
+    ax_e.imshow(disp_sgbm_plot, cmap="viridis", vmin=vmin, vmax=vmax)
+    ax_e.set_title("(e) StereoSGBM Disparity", fontsize=9.5)
+    ax_e.axis("off")
+
+    # Panel (f): StereoSGBM absolute error map
+    ax_f = fig.add_subplot(gs[1, 2])
+    im_f = ax_f.imshow(err_sgbm, cmap="magma", vmin=0.0, vmax=5.0)
+    ax_f.set_title(r"(f) Spatial Error $|\hat{d} - d_{\mathrm{gt}}|$", fontsize=9.5)
+    ax_f.axis("off")
+
+    # Colorbars
+    cb_disp = fig.colorbar(im_c, ax=[ax_c, ax_d, ax_e], orientation="vertical", fraction=0.02, pad=0.03)
+    cb_disp.set_label("Disparity (px)", fontsize=8.5)
+
+    cb_err = fig.colorbar(im_f, ax=ax_f, orientation="vertical", fraction=0.046, pad=0.04)
+    cb_err.set_label("Error (px)", fontsize=8.5)
+
+    # Panel (g): Educational SAD scanline profile across bottom span
+    ax_g = fig.add_subplot(gs[2, :])
+    disps = np.array(sad_data["disparities"])
+    costs = np.array(sad_data["costs"])
+    true_d = sad_data["true_disparity"]
+    best_d = sad_data["best_disparity"]
+
+    valid_c = [c for c in costs if c is not None]
+    ax_g.plot(disps, costs, color="#2b5c8f", lw=1.6, label="Sum of Absolute Differences (SAD)")
+    ax_g.axvline(true_d, color="red", linestyle="--", lw=1.4, label=f"True Disparity ($d={true_d}$ px)")
+    ax_g.plot(best_d, sad_data["min_cost"], "ro", markersize=6, label=f"SAD Minimum ($d^*={best_d}$ px)")
+
+    ax_g.set_xlabel("Candidate Disparity $d$ (pixels)", fontsize=9.5)
+    ax_g.set_ylabel("SAD Matching Cost", fontsize=9.5)
+    ax_g.set_title(f"(g) Educational SAD Cost Profile for Pixel ({rx}, {ry}) along Scanline", fontsize=9.5)
+    ax_g.grid(True, linestyle=":", alpha=0.6)
+    ax_g.legend(loc="upper right", frameon=True, fontsize=8.5)
+    ax_g.set_xlim(0, 48)
+
+    fig.savefig(output_dir / "fig02_classical_matching.png")
+    fig.savefig(output_dir / "fig02_classical_matching.pdf")
+    plt.close(fig)
+    print("Generated Figure 2: fig02_classical_matching.png/.pdf")
+
+
+def generate_figure_03_robustness(output_dir: Path, metrics_df: pd.DataFrame) -> None:
+    """Generate Figure 3: Photometric robustness comparison under controlled perturbations."""
+    df_layer = metrics_df[metrics_df["scene"] == "layered"].copy()
+
+    pert_order = ["clean", "brightness_up", "brightness_down", "contrast_low", "gaussian_noise", "gamma_high"]
+    pert_labels = ["Clean", "Brightness +30", "Brightness -30", "Contrast 0.5x", "Gaussian Noise", "Gamma 1.6"]
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(7.16, 2.7), dpi=300)
+
+    x = np.arange(len(pert_order))
+    width = 0.26
+
+    # Extract metrics for each matcher
+    bm_bad = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoBM")]["bad_2.0_pct"].values[0] for p in pert_order]
+    sgbm_bad = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoSGBM")]["bad_2.0_pct"].values[0] for p in pert_order]
+    clahe_bad = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoSGBM+CLAHE")]["bad_2.0_pct"].values[0] for p in pert_order]
+
+    bm_cov = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoBM")]["coverage_pct"].values[0] for p in pert_order]
+    sgbm_cov = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoSGBM")]["coverage_pct"].values[0] for p in pert_order]
+    clahe_cov = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoSGBM+CLAHE")]["coverage_pct"].values[0] for p in pert_order]
+
+    bm_mae = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoBM")]["mae_px"].values[0] for p in pert_order]
+    sgbm_mae = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoSGBM")]["mae_px"].values[0] for p in pert_order]
+    clahe_mae = [df_layer[(df_layer["perturbation"] == p) & (df_layer["matcher"] == "StereoSGBM+CLAHE")]["mae_px"].values[0] for p in pert_order]
+
+    # Subplot 1: Bad@2.0 error rate
+    ax1.bar(x - width, bm_bad, width, label="StereoBM", color=COLOR_BM, alpha=0.9)
+    ax1.bar(x, sgbm_bad, width, label="StereoSGBM", color=COLOR_SGBM, alpha=0.9)
+    ax1.bar(x + width, clahe_bad, width, label="SGBM+CLAHE", color=COLOR_SGBM_CLAHE, alpha=0.9)
+    ax1.set_ylabel("Bad@2.0 Error Rate (%)", fontsize=9)
+    ax1.set_title("(a) Disparity Error (Lower is better)", fontsize=9.5)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(pert_labels, rotation=35, ha="right", fontsize=8)
+    ax1.grid(True, linestyle=":", alpha=0.5, axis="y")
+    ax1.legend(loc="upper left", frameon=True, fontsize=7.5)
+
+    # Subplot 2: Valid coverage %
+    ax2.bar(x - width, bm_cov, width, color=COLOR_BM, alpha=0.9)
+    ax2.bar(x, sgbm_cov, width, color=COLOR_SGBM, alpha=0.9)
+    ax2.bar(x + width, clahe_cov, width, color=COLOR_SGBM_CLAHE, alpha=0.9)
+    ax2.set_ylabel("Valid Coverage (%)", fontsize=9)
+    ax2.set_title("(b) Match Coverage (Higher is better)", fontsize=9.5)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(pert_labels, rotation=35, ha="right", fontsize=8)
+    ax2.grid(True, linestyle=":", alpha=0.5, axis="y")
+    ax2.set_ylim(0, 100)
+
+    # Subplot 3: MAE in pixels
+    ax3.plot(x, bm_mae, marker="o", color=COLOR_BM, label="StereoBM", lw=1.4)
+    ax3.plot(x, sgbm_mae, marker="s", color=COLOR_SGBM, label="StereoSGBM", lw=1.4)
+    ax3.plot(x, clahe_mae, marker="^", color=COLOR_SGBM_CLAHE, label="SGBM+CLAHE", lw=1.4)
+    ax3.set_ylabel("MAE (pixels)", fontsize=9)
+    ax3.set_title("(c) Mean Absolute Error", fontsize=9.5)
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(pert_labels, rotation=35, ha="right", fontsize=8)
+    ax3.grid(True, linestyle=":", alpha=0.5)
+
+    plt.tight_layout()
+    fig.savefig(output_dir / "fig03_photometric_robustness.png")
+    fig.savefig(output_dir / "fig03_photometric_robustness.pdf")
+    plt.close(fig)
+    print("Generated Figure 3: fig03_photometric_robustness.png/.pdf")
+
+
+def generate_figure_04_cnn_architecture(output_dir: Path) -> None:
+    """Generate Figure 4: Educational diagram of TinyStereoNet and convolution mechanics."""
+    fig, ax = plt.subplots(figsize=(7.16, 3.8), dpi=300)
+    ax.set_xlim(-0.5, 10.5)
+    ax.set_ylim(-0.5, 5.0)
+    ax.axis("off")
+
+    # Helper to draw colored boxes
+    def draw_box(x, y, w, h, title, subtitle, color="#e3f2fd", border="#1565c0"):
+        rect = patches.FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.15",
+                                      facecolor=color, edgecolor=border, lw=1.2)
+        ax.add_patch(rect)
+        ax.text(x + w / 2, y + h / 2 + 0.15, title, ha="center", va="center",
+                fontsize=8.5, fontweight="bold", color="#0d47a1")
+        ax.text(x + w / 2, y + h / 2 - 0.22, subtitle, ha="center", va="center",
+                fontsize=7.5, color="#37474f")
+
+    # 1. Input Patches
+    draw_box(0.0, 1.8, 1.4, 1.2, "Input Patches", "2 x 15 x 15\n(Left + Right)", color="#f5f5f5", border="#757575")
+
+    # Arrow 1
+    ax.annotate("", xy=(1.9, 2.4), xytext=(1.45, 2.4), arrowprops=dict(arrowstyle="->", lw=1.2))
+    ax.text(1.68, 2.65, "Conv 3x3\npad=1", ha="center", fontsize=7.5)
+
+    # 2. Conv1 Feature Maps
+    draw_box(2.0, 1.7, 1.5, 1.4, "Conv1 + ReLU", "8 maps\n8 x 15 x 15", color="#e8f5e9", border="#2e7d32")
+
+    # Arrow 2
+    ax.annotate("", xy=(4.0, 2.4), xytext=(3.55, 2.4), arrowprops=dict(arrowstyle="->", lw=1.2))
+    ax.text(3.78, 2.65, "Conv 3x3\npad=1", ha="center", fontsize=7.5)
+
+    # 3. Conv2 Feature Maps
+    draw_box(4.1, 1.6, 1.5, 1.6, "Conv2 + ReLU", "12 maps\n12 x 15 x 15", color="#fff3e0", border="#ef6c00")
+
+    # Arrow 3
+    ax.annotate("", xy=(6.1, 2.4), xytext=(5.65, 2.4), arrowprops=dict(arrowstyle="->", lw=1.2))
+    ax.text(5.88, 2.65, "Global Avg\nPooling", ha="center", fontsize=7.5)
+
+    # 4. Global Average Pooling
+    draw_box(6.2, 1.8, 1.3, 1.2, "GAP", "12 x 1 x 1\n(Vector)", color="#ede7f6", border="#512da8")
+
+    # Arrow 4
+    ax.annotate("", xy=(8.0, 2.4), xytext=(7.55, 2.4), arrowprops=dict(arrowstyle="->", lw=1.2))
+    ax.text(7.78, 2.65, "Linear\n(12 -> 2)", ha="center", fontsize=7.5)
+
+    # 5. Output Logits
+    draw_box(8.1, 1.8, 1.6, 1.2, "Output Logits", "Match: P(1)\nNonmatch: P(0)", color="#fce4ec", border="#c2185b")
+
+    # Convolution mechanics callout below
+    callout_box = patches.FancyBboxPatch((0.2, 0.1), 9.6, 1.2, boxstyle="round,pad=0.15",
+                                         facecolor="#fafafa", edgecolor="#cfd8dc", lw=1.0)
+    ax.add_patch(callout_box)
+    desc_lines = [
+        r"$\mathbf{Total\,Model\,Parameters:\,1,054}$ (Conv1: 152, Conv2: 876, Linear: 26).",
+        r"$\mathbf{2D\,Convolution\,Mechanics:}\quad (I * K)(u, v) = \sum_{c=0}^1 \sum_{i=-1}^1 \sum_{j=-1}^1 I_c(u+i, v+j) \cdot K_c(i, j) + b$",
+        r"The 2 input channels allow learned kernels to compute spatial cross-correlation between dual patches."
+    ]
+    ax.text(0.4, 0.7, "\n".join(desc_lines), fontsize=8.2, va="center")
+
+    fig.savefig(output_dir / "fig04_cnn_architecture.png")
+    fig.savefig(output_dir / "fig04_cnn_architecture.pdf")
+    plt.close(fig)
+    print("Generated Figure 4: fig04_cnn_architecture.png/.pdf")
+
+
+def generate_figure_05_cnn_learning(output_dir: Path, cnn_history: pd.DataFrame, cnn_metrics: Dict[str, Any]) -> None:
+    """Generate Figure 5: CNN training loss and validation accuracy curves."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.16, 3.0), dpi=300)
+
+    epochs = cnn_history["epoch"].values
+    tr_loss = cnn_history["train_loss"].values
+    val_loss = cnn_history["val_loss"].values
+    tr_acc = cnn_history["train_acc"].values
+    val_acc = cnn_history["val_acc"].values
+
+    base_acc = cnn_metrics["classical_baseline"]["accuracy"]
+    test_acc = cnn_metrics["tiny_cnn"]["accuracy"]
+    n_params = cnn_metrics["model_parameters"]
+
+    # Panel (a): Loss curves
+    ax1.plot(epochs, tr_loss, "b-o", markersize=4, lw=1.4, label="Training Loss")
+    ax1.plot(epochs, val_loss, "r--s", markersize=4, lw=1.4, label="Validation Loss")
+    ax1.set_xlabel("Epoch", fontsize=9.5)
+    ax1.set_ylabel("Cross-Entropy Loss", fontsize=9.5)
+    ax1.set_title("(a) Loss Progression across Epochs", fontsize=10)
+    ax1.grid(True, linestyle=":", alpha=0.6)
+    ax1.legend(loc="upper right", frameon=True, fontsize=8.5)
+    ax1.set_xticks(epochs[::2] if len(epochs) > 8 else epochs)
+
+    # Panel (b): Accuracy curves
+    ax2.plot(epochs, tr_acc, "b-o", markersize=4, lw=1.4, label="Training Accuracy")
+    ax2.plot(epochs, val_acc, "r--s", markersize=4, lw=1.4, label="Validation Accuracy")
+    ax2.axhline(base_acc, color=COLOR_BASELINE, linestyle=":", lw=1.6,
+                label=f"Classical MAD Baseline ({base_acc:.1f}%)")
+
+    # Annotation of final held-out test score
+    ax2.annotate(
+        f"Final Held-Out Test:\nCNN: {test_acc:.1f}% ({n_params} params)",
+        xy=(epochs[-1], val_acc[-1]),
+        xytext=(epochs[-4] if len(epochs) >= 4 else 1, val_acc[-1] - 12),
+        arrowprops=dict(arrowstyle="->", lw=1.1, color="black"),
+        fontsize=8.5,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="#fff9c4", edgecolor="#fbc02d", lw=1.0)
     )
-    ax_geom.text(3.6, 2.5, formula_text, fontsize=10.0,
-                 bbox=dict(boxstyle="round,pad=0.5", facecolor="aliceblue", edgecolor="cornflowerblue"))
 
-    # Subplot (b): Pipeline Architecture Diagram
-    ax_pipe = fig.add_subplot(gs[0, 1])
-    ax_pipe.set_xlim(0, 10)
-    ax_pipe.set_ylim(0, 5)
-    ax_pipe.axis("off")
-    ax_pipe.set_title("(b) CPU-First Calibrated Reconstruction Pipeline", fontweight="bold")
+    ax2.set_xlabel("Epoch", fontsize=9.5)
+    ax2.set_ylabel("Accuracy (%)", fontsize=9.5)
+    ax2.set_title("(b) Classification Accuracy vs Classical Baseline", fontsize=10)
+    ax2.grid(True, linestyle=":", alpha=0.6)
+    ax2.legend(loc="lower right", frameon=True, fontsize=8.5)
+    ax2.set_ylim(40, 102)
+    ax2.set_xticks(epochs[::2] if len(epochs) > 8 else epochs)
 
-    boxes = [
-        ("Raw Stereo\nCapture\n(1280x720)", 0.2, 1.8, 1.8, 1.6, "lightgray"),
-        ("Cached Remap\nFloat32 Rectify\n(y_L = y_R)", 2.4, 1.8, 2.0, 1.6, "wheat"),
-        ("Multiscale SGBM\n(0.5x, 3-Way SGBM\nnumDisp=80)", 4.8, 1.8, 2.2, 1.6, "lightblue"),
-        ("Edge-Preserving\nFilter\n(WLS / Valid Median)", 7.4, 1.8, 2.3, 1.6, "lightgreen"),
+    plt.tight_layout()
+    fig.savefig(output_dir / "fig05_cnn_learning.png")
+    fig.savefig(output_dir / "fig05_cnn_learning.pdf")
+    plt.close(fig)
+    print("Generated Figure 5: fig05_cnn_learning.png/.pdf")
+
+
+def generate_figure_06_comparison(
+    output_dir: Path,
+    cnn_metrics: Dict[str, Any],
+    sample_patches_path: Path
+) -> None:
+    """Generate Figure 6: Classical MAD vs Tiny CNN patch matching comparison."""
+    fig = plt.figure(figsize=(7.16, 5.0), dpi=300)
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.2], hspace=0.35, wspace=0.28)
+
+    # 1. Sample patches visualization
+    samples = np.load(str(sample_patches_path))
+    x_test = samples["x_test"]
+    y_test = samples["y_test"]
+
+    # Find one positive and one negative sample
+    pos_idx = np.where(y_test == 1)[0][0]
+    neg_idx = np.where(y_test == 0)[0][0]
+
+    p_pos_l = x_test[pos_idx, 0]
+    p_pos_r = x_test[pos_idx, 1]
+    diff_pos = np.abs(p_pos_l - p_pos_r)
+
+    p_neg_l = x_test[neg_idx, 0]
+    p_neg_r = x_test[neg_idx, 1]
+    diff_neg = np.abs(p_neg_l - p_neg_r)
+
+    # Subplot (a): Patch pair comparisons
+    ax_a = fig.add_subplot(gs[0, 0])
+    # Composite 3x2 image for patches
+    row1 = np.hstack([p_pos_l, p_pos_r, diff_pos])
+    row2 = np.hstack([p_neg_l, p_neg_r, diff_neg])
+    grid = np.vstack([row1, row2])
+    ax_a.imshow(grid, cmap="gray")
+    ax_a.set_title("(a) Patch Pairs: Left | Right | |Diff|\nTop: Match (1), Bottom: Nonmatch (0)", fontsize=9)
+    ax_a.axis("off")
+
+    # Subplot (b): Candidate Disparity Sweep for a test patch
+    # Load model and sweep
+    ax_b = fig.add_subplot(gs[0, 1])
+    try:
+        import torch
+        model = cnn.TinyStereoNet()
+        model.load_state_dict(torch.load("results/tiny_cnn.pt", weights_only=True))
+        l_img, r_img, gt_img, _ = stereo.generate_layered_synthetic_scene(320, 240, seed=300)
+        sweep = cnn.sweep_patch_candidate_disparities(model, l_img, r_img, x0=110, y0=100, max_disp=48)
+        d_arr = sweep["disparities"]
+        cnn_p = sweep["cnn_probs"]
+        sad_c = sweep["sad_costs"]
+
+        # Dual axis: CNN probability (left) and SAD cost (right)
+        ax_b.plot(d_arr, cnn_p, color=COLOR_CNN, lw=1.6, label="CNN Match Probability")
+        ax_b.axvline(32, color="red", linestyle="--", lw=1.2, label="True Disparity (32 px)")
+        ax_b.set_xlabel("Candidate Disparity $d$ (pixels)", fontsize=9)
+        ax_b.set_ylabel("CNN Probability $P(1)$", color=COLOR_CNN, fontsize=9)
+        ax_b.tick_params(axis="y", labelcolor=COLOR_CNN)
+        ax_b.set_ylim(-0.05, 1.05)
+
+        ax_b_right = ax_b.twinx()
+        ax_b_right.plot(d_arr, sad_c, color="#666666", linestyle=":", lw=1.3, label="SAD Cost")
+        ax_b_right.set_ylabel("SAD Matching Cost", color="#666666", fontsize=9)
+        ax_b_right.tick_params(axis="y", labelcolor="#666666")
+
+        ax_b.set_title("(b) Disparity Sweep: CNN Confidence vs SAD", fontsize=9)
+        ax_b.grid(True, linestyle=":", alpha=0.5)
+    except Exception as e:
+        ax_b.text(0.5, 0.5, f"Sweep plot: {e}", ha="center", va="center", fontsize=8)
+
+    # Subplot (c): Confusion Matrices
+    ax_c = fig.add_subplot(gs[1, 0])
+    cm_base = cnn_metrics["classical_baseline"]["confusion_matrix"]
+    cm_cnn = cnn_metrics["tiny_cnn"]["confusion_matrix"]
+
+    mat_base = np.array([[cm_base["TP"], cm_base["FN"]], [cm_base["FP"], cm_base["TN"]]])
+    im_cm = ax_c.imshow(mat_base, cmap="Blues", alpha=0.85)
+    ax_c.set_xticks([0, 1])
+    ax_c.set_yticks([0, 1])
+    ax_c.set_xticklabels(["Pred Match", "Pred Nonmatch"], fontsize=8.5)
+    ax_c.set_yticklabels(["True Match", "True Nonmatch"], fontsize=8.5)
+    for i in range(2):
+        for j in range(2):
+            ax_c.text(j, i, str(mat_base[i, j]), ha="center", va="center", fontsize=11, fontweight="bold")
+    ax_c.set_title(f"(c) Classical MAD Confusion Matrix\nAccuracy = {cnn_metrics['classical_baseline']['accuracy']:.1f}%", fontsize=9)
+
+    ax_d = fig.add_subplot(gs[1, 1])
+    mat_cnn = np.array([[cm_cnn["TP"], cm_cnn["FN"]], [cm_cnn["FP"], cm_cnn["TN"]]])
+    im_cm2 = ax_d.imshow(mat_cnn, cmap="Purples", alpha=0.85)
+    ax_d.set_xticks([0, 1])
+    ax_d.set_yticks([0, 1])
+    ax_d.set_xticklabels(["Pred Match", "Pred Nonmatch"], fontsize=8.5)
+    ax_d.set_yticklabels(["True Match", "True Nonmatch"], fontsize=8.5)
+    for i in range(2):
+        for j in range(2):
+            ax_d.text(j, i, str(mat_cnn[i, j]), ha="center", va="center", fontsize=11, fontweight="bold")
+    ax_d.set_title(f"(d) Tiny CNN Confusion Matrix\nAccuracy = {cnn_metrics['tiny_cnn']['accuracy']:.1f}%", fontsize=9)
+
+    fig.savefig(output_dir / "fig06_classical_vs_cnn.png")
+    fig.savefig(output_dir / "fig06_classical_vs_cnn.pdf")
+    plt.close(fig)
+    print("Generated Figure 6: fig06_classical_vs_cnn.png/.pdf")
+
+
+def generate_stereo_loop_gif(output_dir: Path, data: Dict[str, Any], metrics_df: pd.DataFrame) -> None:
+    """Generate hero stereo looping GIF from evaluated conditions."""
+    conditions = [
+        ("clean", "Condition: Clean Baseline"),
+        ("brightness_up", "Condition: Brightness (+30)"),
+        ("contrast_low", "Condition: Low Contrast (0.5x)"),
+        ("gaussian_noise", "Condition: Gaussian Noise (\u03c3=15)"),
+        ("gamma_high", "Condition: Non-linear Gamma (1.6)")
     ]
 
-    for label, bx, by, bw, bh, col in boxes:
-        rect = patches.FancyBboxPatch((bx, by), bw, bh, boxstyle="round,pad=0.2",
-                                      facecolor=col, edgecolor="black", lw=1.2)
-        ax_pipe.add_patch(rect)
-        ax_pipe.text(bx + bw / 2.0, by + bh / 2.0, label, ha="center", va="center",
-                     fontsize=9.0, fontweight="bold")
+    left = data["layered_left"]
+    df_layer = metrics_df[metrics_df["scene"] == "layered"]
 
-    # Connecting arrows
-    for ax_start in [2.1, 4.5, 7.1]:
-        ax_pipe.annotate("", xy=(ax_start + 0.3, 2.6), xytext=(ax_start - 0.1, 2.6),
-                         arrowprops=dict(arrowstyle="->", color="black", lw=2.0))
+    frames: List[Image.Image] = []
 
-    # Reprojection branch
-    rect_z = patches.FancyBboxPatch((7.4, 0.1), 2.3, 1.2, boxstyle="round,pad=0.2",
-                                    facecolor="lightpink", edgecolor="black", lw=1.2)
-    ax_pipe.add_patch(rect_z)
-    ax_pipe.text(8.55, 0.7, "Metric Depth Z (m)\n& 3D Pointcloud", ha="center", va="center",
-                 fontsize=8.5, fontweight="bold")
-    ax_pipe.annotate("", xy=(8.55, 1.3), xytext=(8.55, 1.8),
-                     arrowprops=dict(arrowstyle="->", color="crimson", lw=2.0))
+    for pert, title in conditions:
+        right = data.get(f"layered_right_{pert}", data["layered_right_clean"])
+        disp_key = f"layered_{pert}_stereosgbm_disp"
+        disp = data.get(disp_key, data["layered_clean_stereosgbm_disp"])
 
-    ax_pipe.text(5.0, 0.4, "Fast: 34 ms | Balanced: 67 ms | Quality: 332 ms",
-                 ha="center", fontsize=9.5, fontweight="bold", color="darkgreen")
+        row = df_layer[(df_layer["perturbation"] == pert) & (df_layer["matcher"] == "StereoSGBM")]
+        bad_rate = row["bad_2.0_pct"].values[0] if len(row) > 0 else 0.0
+        cov = row["coverage_pct"].values[0] if len(row) > 0 else 0.0
 
-    # Subplot (c) & (d): Epipolar Scanline Check (Before vs After Rectification)
-    ax_raw = fig.add_subplot(gs[1, 0])
-    h, w = raw_l.shape[:2]
-    # Compose raw side by side
-    raw_composite = np.hstack([raw_l, raw_r])
-    ax_raw.imshow(cv2.cvtColor(raw_composite, cv2.COLOR_BGR2RGB))
-    ax_raw.set_title("(c) Raw Captured Stereo Pair (With Vertical Parallax)", fontweight="bold")
-    ax_raw.axis("off")
-    # Draw horizontal scanlines across raw
-    for y_line in [180, 360, 540]:
-        ax_raw.axhline(y=y_line, color="red", linestyle="--", lw=1.2, alpha=0.8)
+        # Create colorized disparity using viridis
+        disp_clean = np.where(disp > 0, disp, 0.0)
+        disp_norm = np.clip(disp_clean / 35.0 * 255.0, 0, 255).astype(np.uint8)
+        disp_color = cv2.applyColorMap(disp_norm, cv2.COLORMAP_VIRIDIS)
+        disp_color[disp <= 0] = [30, 30, 30] # dark gray invalid
 
-    ax_rect = fig.add_subplot(gs[1, 1])
-    rect_composite = np.hstack([rect_l, rect_r])
-    ax_rect.imshow(cv2.cvtColor(rect_composite, cv2.COLOR_BGR2RGB))
-    ax_rect.set_title("(d) Epipolar Rectified Stereo Pair (Horizontal Alignment Verified)", fontweight="bold")
-    ax_rect.axis("off")
-    # Draw horizontal scanlines across rectified
-    for y_line in [180, 360, 540]:
-        ax_rect.axhline(y=y_line, color="cyan", linestyle="-", lw=1.5, alpha=0.9)
+        left_bgr = cv2.cvtColor(left, cv2.COLOR_GRAY2BGR)
+        right_bgr = cv2.cvtColor(right, cv2.COLOR_GRAY2BGR)
 
-    plt.savefig(assets_dir / "fig01_stereo_geometry.png", dpi=300)
-    plt.savefig(assets_dir / "fig01_stereo_geometry.pdf")
-    plt.savefig(assets_dir / "fig01_rectification.png", dpi=250)
-    plt.close()
-    print("Saved Figure 1.")
+        # Composite side-by-side: Left | Right | StereoSGBM Disparity
+        h, w = left.shape
+        header_h = 42
+        comp = np.zeros((h + header_h, w * 3, 3), dtype=np.uint8)
+        comp[:header_h, :] = [245, 245, 245]
+        comp[header_h:, :w] = left_bgr
+        comp[header_h:, w:2*w] = right_bgr
+        comp[header_h:, 2*w:] = disp_color
 
+        # Convert to PIL for text annotations
+        pil_img = Image.fromarray(comp)
+        draw = ImageDraw.Draw(pil_img)
 
-def generate_fig02_middlebury_gunung(
-    mid_im0: np.ndarray,
-    mid_gt: np.ndarray,
-    mid_disp_opt: np.ndarray,
-    mid_mask: np.ndarray,
-    pt_rect_l: np.ndarray,
-    gun_rs_ref_depth: np.ndarray,
-    gun_depth_opt: np.ndarray
-) -> None:
-    """Generate Figure 2: Cross-Dataset Benchmark and Metric Depth Validation."""
-    print("Generating Figure 2: Middlebury vs Gunung Validation...")
-    fig, axs = plt.subplots(2, 3, figsize=(14, 7.8), constrained_layout=True)
+        # Labels
+        draw.text((15, 12), f"{title}   |   StereoSGBM Bad@2.0: {bad_rate:.2f}%   |   Coverage: {cov:.1f}%", fill=(20, 20, 20))
+        draw.text((15, header_h + 8), "Left Image", fill=(255, 255, 0))
+        draw.text((w + 15, header_h + 8), "Right Image", fill=(255, 255, 0))
+        draw.text((2 * w + 15, header_h + 8), "StereoSGBM Disparity", fill=(255, 255, 0))
 
-    gt_mid_plot = np.where(mid_mask & (mid_gt > 0) & (mid_gt < 1e8), mid_gt, np.nan)
-    disp_mid_plot = np.where(mid_disp_opt > 0, mid_disp_opt, np.nan)
+        frames.append(pil_img)
 
-    gun_depth_plot = np.where((gun_depth_opt >= 0.4) & (gun_depth_opt <= 5.5), gun_depth_opt, np.nan)
-    gun_rs_ref_plot = np.where((gun_rs_ref_depth >= 0.4) & (gun_rs_ref_depth <= 5.5), gun_rs_ref_depth, np.nan)
-
-    # Row 1: Middlebury
-    axs[0, 0].imshow(cv2.cvtColor(mid_im0, cv2.COLOR_BGR2RGB))
-    axs[0, 0].set_title("(a) Middlebury: Rectified Left (Adirondack)", fontweight="bold")
-    axs[0, 0].axis("off")
-
-    im_gt = axs[0, 1].imshow(gt_mid_plot, cmap="inferno")
-    axs[0, 1].set_title("(b) Middlebury: Ground Truth Disparity", fontweight="bold")
-    axs[0, 1].axis("off")
-    cbar1 = fig.colorbar(im_gt, ax=axs[0, 1], fraction=0.046, pad=0.04)
-    cbar1.set_label("Disparity (px)", fontweight="bold")
-
-    im_pred_m = axs[0, 2].imshow(disp_mid_plot, cmap="inferno", vmin=np.nanmin(gt_mid_plot), vmax=np.nanmax(gt_mid_plot))
-    axs[0, 2].set_title("(c) Middlebury: Calibrated SGBM+WLS\n[Bad-2.0: 29.1%, MAE: 1.33 px, Cov: 77.7%]", fontweight="bold")
-    axs[0, 2].axis("off")
-    cbar2 = fig.colorbar(im_pred_m, ax=axs[0, 2], fraction=0.046, pad=0.04)
-    cbar2.set_label("Disparity (px)", fontweight="bold")
-
-    # Row 2: Gunung
-    axs[1, 0].imshow(cv2.cvtColor(pt_rect_l, cv2.COLOR_BGR2RGB))
-    axs[1, 0].set_title("(d) Gunung: Rectified Left (puncakTinggi)", fontweight="bold")
-    axs[1, 0].axis("off")
-
-    im_rs = axs[1, 1].imshow(gun_rs_ref_plot, cmap="viridis_r", vmin=0.5, vmax=4.0)
-    axs[1, 1].set_title("(e) Gunung: Registered RealSense Depth\n[PnP Inliers: 106, Reproj Med: 1.25 px]", fontweight="bold")
-    axs[1, 1].axis("off")
-    cbar3 = fig.colorbar(im_rs, ax=axs[1, 1], fraction=0.046, pad=0.04)
-    cbar3.set_label("Metric Depth (m)", fontweight="bold")
-
-    im_pred_g = axs[1, 2].imshow(gun_depth_plot, cmap="viridis_r", vmin=0.5, vmax=4.0)
-    axs[1, 2].set_title("(f) Gunung: Calibrated SGBM+WLS Metric Depth\n[MAE: 0.282 m, Med: 0.063 m (6.3 cm), delta<1.25: 84.4%]", fontweight="bold")
-    axs[1, 2].axis("off")
-    cbar4 = fig.colorbar(im_pred_g, ax=axs[1, 2], fraction=0.046, pad=0.04)
-    cbar4.set_label("Metric Depth (m)", fontweight="bold")
-
-    plt.savefig(assets_dir / "fig02_middlebury_gunung.png", dpi=300)
-    plt.savefig(assets_dir / "fig02_middlebury_gunung.pdf")
-    plt.savefig(assets_dir / "fig01_cross_dataset.png", dpi=250)
-    plt.close()
-    print("Saved Figure 2.")
-
-
-def generate_fig03_filters(
-    mid_im0: np.ndarray,
-    mid_raw: np.ndarray,
-    mid_r_raw: np.ndarray,
-    opt_matcher: cv2.StereoSGBM,
-    pt_rect_l: np.ndarray,
-    gun_raw: np.ndarray,
-    gun_r_raw: np.ndarray
-) -> None:
-    """Generate Figure 3: Filter Comparison Suite."""
-    print("Generating Figure 3: Filter Comparison Suite...")
-    mid_f0 = stereo.apply_filter("f0_raw", mid_raw, mid_im0)
-    mid_f1 = stereo.apply_filter("f1_bilateral_legacy", mid_raw, mid_im0)
-    mid_f2 = stereo.apply_filter("f2_median_valid", mid_raw, mid_im0)
-    mid_f5 = stereo.apply_filter("f5_wls", mid_raw, mid_im0, mid_r_raw, opt_matcher)
-
-    gun_f0 = stereo.apply_filter("f0_raw", gun_raw, pt_rect_l)
-    gun_f1 = stereo.apply_filter("f1_bilateral_legacy", gun_raw, pt_rect_l)
-    gun_f2 = stereo.apply_filter("f2_median_valid", gun_raw, pt_rect_l)
-    gun_f5 = stereo.apply_filter("f5_wls", gun_raw, pt_rect_l, gun_r_raw, opt_matcher)
-
-    fig, axs = plt.subplots(2, 4, figsize=(16, 7.6), constrained_layout=True)
-
-    # Row 1: Middlebury
-    axs[0, 0].imshow(np.where(mid_f0 > 0, mid_f0, np.nan), cmap="inferno", vmin=0, vmax=70)
-    axs[0, 0].set_title("Mid: F0 Raw SGBM\n[Bad-2.0: 34.6%, MAE: 1.29 px]", fontsize=10.5, fontweight="bold")
-    axs[0, 0].axis("off")
-
-    axs[0, 1].imshow(np.where(mid_f1 > 0, mid_f1, np.nan), cmap="inferno", vmin=0, vmax=70)
-    axs[0, 1].set_title("Mid: F1 Legacy Bilateral (Buggy)\n[Bad-2.0: 42.9%, MAE: 3.79 px]", color="darkred", fontsize=10.5, fontweight="bold")
-    axs[0, 1].axis("off")
-
-    axs[0, 2].imshow(np.where(mid_f2 > 0, mid_f2, np.nan), cmap="inferno", vmin=0, vmax=70)
-    axs[0, 2].set_title("Mid: F2 Validity-Aware Median\n[Bad-2.0: 34.7%, MAE: 1.27 px]", fontsize=10.5, fontweight="bold")
-    axs[0, 2].axis("off")
-
-    axs[0, 3].imshow(np.where(mid_f5 > 0, mid_f5, np.nan), cmap="inferno", vmin=0, vmax=70)
-    axs[0, 3].set_title("Mid: F5 Standard WLS\n[Bad-2.0: 29.1%, MAE: 1.33 px]", color="darkgreen", fontsize=10.5, fontweight="bold")
-    axs[0, 3].axis("off")
-
-    # Row 2: Gunung
-    axs[1, 0].imshow(np.where(gun_f0 > 0, gun_f0, np.nan), cmap="turbo", vmin=0, vmax=160)
-    axs[1, 0].set_title("Gunung: F0 Raw SGBM\n[MAE: 0.214 m, Med: 0.055 m]", fontsize=10.5, fontweight="bold")
-    axs[1, 0].axis("off")
-
-    axs[1, 1].imshow(np.where(gun_f1 > 0, gun_f1, np.nan), cmap="turbo", vmin=0, vmax=160)
-    axs[1, 1].set_title("Gunung: F1 Legacy Bilateral (Halo)\n[MAE: 0.607 m, Med: 0.125 m]", color="darkred", fontsize=10.5, fontweight="bold")
-    axs[1, 1].axis("off")
-
-    axs[1, 2].imshow(np.where(gun_f2 > 0, gun_f2, np.nan), cmap="turbo", vmin=0, vmax=160)
-    axs[1, 2].set_title("Gunung: F2 Validity-Aware Median\n[MAE: 0.211 m, Med: 0.055 m]", fontsize=10.5, fontweight="bold")
-    axs[1, 2].axis("off")
-
-    axs[1, 3].imshow(np.where(gun_f5 > 0, gun_f5, np.nan), cmap="turbo", vmin=0, vmax=160)
-    axs[1, 3].set_title("Gunung: F5 Standard WLS (Clean)\n[MAE: 0.246 m, Med: 0.065 m]", color="darkgreen", fontsize=10.5, fontweight="bold")
-    axs[1, 3].axis("off")
-
-    plt.savefig(assets_dir / "fig03_filters.png", dpi=300)
-    plt.savefig(assets_dir / "fig03_filters.pdf")
-    plt.savefig(assets_dir / "fig02_filters.png", dpi=250)
-    plt.close()
-    print("Saved Figure 3.")
-
-
-def generate_fig04_cpu_tradeoffs() -> None:
-    """Generate Figure 4: Accuracy-Coverage-CPU Pareto Frontier."""
-    print("Generating Figure 4: CPU Tradeoffs and Pareto Frontier...")
-    fig, axs = plt.subplots(2, 2, figsize=(13.5, 9.0), constrained_layout=True)
-
-    # Subplot (a): Middlebury Benchmark Pareto Frontier
-    ax_a = axs[0, 0]
-    configs = ["Default SGBM", "FAST (30 FPS)", "BALANCED (15 FPS)", "QUALITY (3 FPS)"]
-    mid_lat = [125.0, 16.4, 23.4, 116.4]
-    mid_bad2 = [43.94, 28.42, 29.35, 29.66]
-    colors = ["crimson", "seagreen", "darkorange", "royalblue"]
-    markers = ["X", "o", "s", "^"]
-
-    for name, lat, b2, c, m in zip(configs, mid_lat, mid_bad2, colors, markers):
-        ax_a.scatter(lat, b2, color=c, marker=m, s=110, zorder=5, label=name)
-
-    # Annotate Pareto points
-    ax_a.annotate("FAST: 16.4 ms\nBad-2.0: 28.4%", (16.4, 28.42), xytext=(22, 26.5),
-                  arrowprops=dict(arrowstyle="->", color="seagreen", lw=1.2))
-    ax_a.annotate("BALANCED: 23.4 ms\nBad-2.0: 29.4%", (23.4, 29.35), xytext=(35, 31.0),
-                  arrowprops=dict(arrowstyle="->", color="darkorange", lw=1.2))
-    ax_a.annotate("QUALITY: 116.4 ms\nBad-2.0: 29.7%", (116.4, 29.66), xytext=(85, 33.5),
-                  arrowprops=dict(arrowstyle="->", color="royalblue", lw=1.2))
-    ax_a.annotate("Default: 125.0 ms\nBad-2.0: 43.9%", (125.0, 43.94), xytext=(75, 41.0),
-                  arrowprops=dict(arrowstyle="->", color="crimson", lw=1.2))
-
-    ax_a.set_xlabel("Latency per Frame (ms)", fontweight="bold")
-    ax_a.set_ylabel("Completeness Bad-2.0 (%)", fontweight="bold")
-    ax_a.set_title("(a) Middlebury Benchmark Pareto Frontier", fontweight="bold")
-    ax_a.grid(True, linestyle=":", alpha=0.6)
-    ax_a.legend(loc="upper right", frameon=True)
-
-    # Subplot (b): Gunung Field RealSense Validation vs Latency
-    ax_b = axs[0, 1]
-    gun_lat = [385.0, 34.4, 66.8, 332.3]
-    gun_med_err_cm = [17.4, 10.1, 12.7, 10.2]
-
-    for name, lat, err, c, m in zip(configs, gun_lat, gun_med_err_cm, colors, markers):
-        ax_b.scatter(lat, err, color=c, marker=m, s=110, zorder=5, label=name)
-
-    ax_b.annotate("FAST: 34.4 ms\n10.1 cm Med Err", (34.4, 10.1), xytext=(45, 9.2),
-                  arrowprops=dict(arrowstyle="->", color="seagreen", lw=1.2))
-    ax_b.annotate("BALANCED: 66.8 ms\n12.7 cm Med Err", (66.8, 12.7), xytext=(85, 13.8),
-                  arrowprops=dict(arrowstyle="->", color="darkorange", lw=1.2))
-    ax_b.annotate("QUALITY: 332.3 ms\n10.2 cm Med Err", (332.3, 10.2), xytext=(220, 11.5),
-                  arrowprops=dict(arrowstyle="->", color="royalblue", lw=1.2))
-    ax_b.annotate("Default: 385.0 ms\n17.4 cm Med Err", (385.0, 17.4), xytext=(260, 16.5),
-                  arrowprops=dict(arrowstyle="->", color="crimson", lw=1.2))
-
-    ax_b.set_xlabel("Latency per 720p Frame (ms)", fontweight="bold")
-    ax_b.set_ylabel("Median Metric Depth Error (cm)", fontweight="bold")
-    ax_b.set_title("(b) Gunung Field Depth Error vs Latency", fontweight="bold")
-    ax_b.grid(True, linestyle=":", alpha=0.6)
-    ax_b.legend(loc="upper right", frameon=True)
-
-    # Subplot (c): Resolution Scaling and Breakdown
-    ax_c = axs[1, 0]
-    scales = ["180p (0.25x)", "360p (0.50x)", "720p (1.00x)"]
-    remap_t = [0.3, 0.8, 4.5]
-    sgbm_l_t = [5.0, 23.7, 167.5]
-    sgbm_r_t = [4.1, 15.5, 160.4]
-    wls_t = [4.0, 10.8, 54.1]
-    depth_t = [0.4, 2.3, 11.3]
-
-    x_idx = np.arange(len(scales))
-    w = 0.55
-    b1 = np.array(remap_t)
-    b2 = b1 + np.array(sgbm_l_t)
-    b3 = b2 + np.array(sgbm_r_t)
-    b4 = b3 + np.array(wls_t)
-
-    ax_c.bar(x_idx, remap_t, w, label="Remap", color="wheat")
-    ax_c.bar(x_idx, sgbm_l_t, w, bottom=b1, label="SGBM Left (40%)", color="cornflowerblue")
-    ax_c.bar(x_idx, sgbm_r_t, w, bottom=b2, label="SGBM Right (39%)", color="royalblue")
-    ax_c.bar(x_idx, wls_t, w, bottom=b3, label="WLS Filter (13%)", color="mediumseagreen")
-    ax_c.bar(x_idx, depth_t, w, bottom=b4, label="Depth/Reproj (3%)", color="salmon")
-
-    ax_c.set_xticks(x_idx)
-    ax_c.set_xticklabels(scales, fontweight="bold")
-    ax_c.set_ylabel("Execution Time (ms)", fontweight="bold")
-    ax_c.set_title("(c) Multiscale Latency Breakdown (7.8x Speedup at 360p)", fontweight="bold")
-    ax_c.legend(loc="upper left", frameon=True, fontsize=8.5)
-    ax_c.grid(True, axis="y", linestyle=":", alpha=0.6)
-
-    # Subplot (d): Thread Scaling Plateau
-    ax_d = axs[1, 1]
-    threads = [1, 2, 4, 8, 16]
-    lat_threads = [915.1, 1519.4, 1107.9, 797.1, 760.1]
-    ax_d.plot(threads, lat_threads, marker="o", color="navy", lw=2.2, label="Full 720p Pipeline")
-    ax_d.scatter([16], [760.1], color="crimson", s=90, zorder=5)
-    ax_d.annotate("Contention Plateau\n(8-16 Threads: 760 ms)", (16, 760.1), xytext=(8.5, 950),
-                  arrowprops=dict(arrowstyle="->", color="crimson", lw=1.2))
-
-    ax_d.set_xlabel("OpenCV Thread Count", fontweight="bold")
-    ax_d.set_ylabel("Wall Clock Latency (ms)", fontweight="bold")
-    ax_d.set_title("(d) CPU Thread Scaling and Cache Contention", fontweight="bold")
-    ax_d.set_xticks(threads)
-    ax_d.grid(True, linestyle=":", alpha=0.6)
-    ax_d.legend(loc="upper right", frameon=True)
-
-    plt.savefig(assets_dir / "fig04_cpu_tradeoffs.png", dpi=300)
-    plt.savefig(assets_dir / "fig04_cpu_tradeoffs.pdf")
-    plt.savefig(assets_dir / "fig04_optimization.png", dpi=250)
-    plt.close()
-    print("Saved Figure 4.")
-
-
-def generate_fig05_four_terrains(
-    images_rect: dict,
-    opt_matcher: cv2.StereoSGBM
-) -> None:
-    """Generate Figure 5: Four-Terrain Evaluation and Failure Analysis."""
-    print("Generating Figure 5: Four-Terrain Evaluation...")
-    terrains = ["puncakTinggi", "puncakWarung", "tanggaBiru", "tanggaKuning"]
-    fig, axs = plt.subplots(2, 2, figsize=(13.5, 8.2), constrained_layout=True)
-
-    terrain_annotations = [
-        ("(a) puncakTinggi: Summit Ridge",
-         "RealSense Depth: 0.063 m Med Err | 84.4% Delta<1.25",
-         "Cov: 61.3% | Failure: Overexposed Saturated Sky Rejection"),
-        ("(b) puncakWarung: Roadside Shelter",
-         "RealSense Depth: Omitted (>15 m Active IR Range Limit)",
-         "Cov: 56.5% | Failure: Shadow Occlusions Under Tin Roof"),
-        ("(c) tanggaBiru: Blue Stairway",
-         "RealSense Depth: 0.225 m Med Err | 59.3% Delta<1.25",
-         "Cov: 48.3% | Failure: Repeated Step Edges & Slender Railing"),
-        ("(d) tanggaKuning: Yellow Stairway",
-         "RealSense Depth: 0.094 m Med Err | 86.3% Delta<1.25",
-         "Cov: 55.5% | Failure: Periodic Metal Bars & Steep Slope")
-    ]
-
-    for idx, (t, (m_title, rs_sub, cov_sub)) in enumerate(zip(terrains, terrain_annotations)):
-        ax = axs[idx // 2, idx % 2]
-        rect_l, rect_r = images_rect[t]
-        d_opt, _ = stereo.compute_disparity_wls(opt_matcher, rect_l, rect_r)
-        d_plot = np.where(d_opt > 0, d_opt, np.nan)
-        im_t = ax.imshow(d_plot, cmap="turbo", vmin=0, vmax=160)
-        ax.set_title(f"{m_title}\n{rs_sub}\n[{cov_sub}]", fontsize=10.0, fontweight="bold", pad=5)
-        ax.axis("off")
-        cbar = fig.colorbar(im_t, ax=ax, fraction=0.046, pad=0.03)
-        cbar.set_label("Disparity (px)", fontweight="bold")
-
-    plt.savefig(assets_dir / "fig05_four_terrains.png", dpi=300)
-    plt.savefig(assets_dir / "fig05_four_terrains.pdf")
-    plt.savefig(assets_dir / "fig05_terrains.png", dpi=250)
-    plt.close()
-    print("Saved Figure 5.")
-
-
-def generate_hero_loop_gif(images_rect: dict, opt_matcher: cv2.StereoSGBM) -> None:
-    """Generate hero looping GIF assets/stereo_loop.gif cycling across 4 terrains."""
-    print("Generating Hero Looping GIF: assets/stereo_loop.gif...")
-    terrains = ["puncakTinggi", "puncakWarung", "tanggaBiru", "tanggaKuning"]
-    gif_frames = []
-    fps = 10
-    frames_per_terrain = 24
-    colormap = plt.get_cmap("turbo")
-
-    for t in terrains:
-        rect_l, rect_r = images_rect[t]
-        # Fast baseline
-        d_fast, _ = stereo.run_stereo_pipeline(rect_l, rect_r, preset="FAST")
-        d_norm_fast = np.clip(d_fast / 160.0, 0, 1)
-        d_col_fast = (colormap(d_norm_fast)[:, :, :3] * 255).astype(np.uint8)
-        d_col_fast[d_fast <= 0] = [30, 30, 30]
-
-        # Balanced WLS reconstruction
-        d_bal, _ = stereo.run_stereo_pipeline(rect_l, rect_r, preset="BALANCED")
-        d_norm_bal = np.clip(d_bal / 160.0, 0, 1)
-        d_col_bal = (colormap(d_norm_bal)[:, :, :3] * 255).astype(np.uint8)
-        d_col_bal[d_bal <= 0] = [30, 30, 30]
-
-        w_sub, h_sub = 384, 216
-        im_sub = cv2.resize(cv2.cvtColor(rect_l, cv2.COLOR_BGR2RGB), (w_sub, h_sub))
-        df_sub = cv2.resize(d_col_fast, (w_sub, h_sub))
-        db_sub = cv2.resize(d_col_bal, (w_sub, h_sub))
-
-        canvas = np.zeros((h_sub + 44, w_sub * 3, 3), dtype=np.uint8)
-        canvas[44:, :w_sub] = im_sub
-        canvas[44:, w_sub:2*w_sub] = df_sub
-        canvas[44:, 2*w_sub:] = db_sub
-        canvas[:44, :] = [20, 24, 32]
-
-        cv2.putText(canvas, f"Terrain: {t}", (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(canvas, "1. Rectified Input", (15, h_sub + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
-        cv2.putText(canvas, "2. FAST SGBM (34 ms)", (w_sub + 15, h_sub + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 220, 240), 1)
-        cv2.putText(canvas, "3. BALANCED WLS (67 ms)", (2*w_sub + 15, h_sub + 36), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 240, 120), 1)
-
-        pil_frame = Image.fromarray(canvas)
-        for _ in range(frames_per_terrain):
-            gif_frames.append(pil_frame)
-
-    gif_path = assets_dir / "stereo_loop.gif"
-    gif_frames[0].save(
+    gif_path = output_dir / "stereo_loop.gif"
+    frames[0].save(
         gif_path,
         save_all=True,
-        append_images=gif_frames[1:],
-        duration=int(1000 / fps),
-        loop=0,
-        optimize=True
+        append_images=frames[1:],
+        duration=1400,
+        loop=0
     )
-    gif_frames[0].save(
-        assets_dir / "terrain_loop.gif",
-        save_all=True,
-        append_images=gif_frames[1:],
-        duration=int(1000 / fps),
-        loop=0,
-        optimize=True
-    )
-    print(f"Saved {gif_path} and terrain_loop.gif")
+    print(f"Generated hero GIF: {gif_path}")
 
 
-def generate_all_visuals(
-    calib_path: str = DEFAULT_CALIB,
-    gunung_root: str = DEFAULT_GUNUNG,
-    mid_root: str = DEFAULT_MID
-) -> None:
-    """Run visual generation pipeline."""
-    print("Loading calibration and datasets...")
-    calib = stereo.load_calibration(calib_path)
-    maps_l, maps_r, Q = stereo.build_rectification_maps(calib, img_size=(1280, 720))
+def main() -> None:
+    assets_dir = Path("assets")
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    results_dir = Path("results")
 
-    root_p = Path(gunung_root)
-    terrains = ["puncakTinggi", "puncakWarung", "tanggaBiru", "tanggaKuning"]
+    print("=" * 72)
+    print("SCIENTIFIC VISUALIZATION PIPELINE")
+    print("=" * 72)
 
-    images_raw = {}
-    images_rect = {}
-    rs_data = {}
+    # 1. Figure 1: Geometry illustration
+    generate_figure_01_geometry(assets_dir)
 
-    for t in terrains:
-        st_dir = root_p / t / "stereo"
-        raw_l = cv2.imread(str(st_dir / "left_0000.png"))
-        raw_r = cv2.imread(str(st_dir / "right_0000.png"))
-        rect_l, rect_r = stereo.rectify_pair(raw_l, raw_r, maps_l, maps_r)
-        images_raw[t] = (raw_l, raw_r)
-        images_rect[t] = (rect_l, rect_r)
+    # Load saved experimental data
+    disp_path = results_dir / "sample_disparities.npz"
+    sad_path = results_dir / "sad_profile.json"
+    metrics_path = results_dir / "metrics.csv"
+    cnn_hist_path = results_dir / "cnn_history.csv"
+    cnn_met_path = results_dir / "cnn_metrics.json"
+    cnn_samples_path = results_dir / "cnn_test_samples.npz"
 
-        rs_p = root_p / t / "hardware" / "realsense"
-        rs_rgb = cv2.imread(str(rs_p / "rgb_0000.png"))
-        rs_depth = np.load(str(rs_p / "depth_0000.npz"))["depth_map"]
-        rs_data[t] = (rs_rgb, rs_depth)
+    if not disp_path.exists() or not metrics_path.exists():
+        print("Missing classical results. Run 'python reproduce.py --full' first.")
+        return
 
-    # Middlebury Adirondack
-    mid_p = Path(mid_root) / "Adirondack"
-    mid_im0 = cv2.imread(str(mid_p / "im0.png"))
-    mid_im1 = cv2.imread(str(mid_p / "im1.png"))
-    mid_gt = stereo.load_pfm(str(mid_p / "disp0GT.pfm"))
-    mid_mask = cv2.imread(str(mid_p / "mask0nocc.png"), cv2.IMREAD_GRAYSCALE) == 255
+    disp_data = np.load(str(disp_path))
+    metrics_df = pd.read_csv(metrics_path)
 
-    opt_params = {
-        "minDisparity": 0, "numDisparities": 160, "blockSize": 7,
-        "P1": 150, "P2": 1200, "disp12MaxDiff": 1, "uniquenessRatio": 10,
-        "speckleWindowSize": 100, "speckleRange": 2,
-        "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY
-    }
-    opt_matcher = stereo.create_sgbm_matcher(opt_params)
+    with open(sad_path, "r", encoding="utf-8") as f:
+        sad_data = json.load(f)
 
-    # RealSense registration for puncakTinggi
-    pt_rect_l, pt_rect_r = images_rect["puncakTinggi"]
-    pt_rs_rgb, pt_rs_raw = rs_data["puncakTinggi"]
+    # 2. Figure 2: Classical matching composite
+    generate_figure_02_classical(assets_dir, disp_data, sad_data)
 
-    sift = cv2.SIFT_create(3000)
-    kp_st, des_st = sift.detectAndCompute(pt_rect_l, None)
-    kp_rs, des_rs = sift.detectAndCompute(pt_rs_rgb, None)
-    bf = cv2.BFMatcher(cv2.NORM_L2)
-    matches = bf.knnMatch(des_rs, des_st, k=2)
-    good = [m for m, n in matches if m.distance < 0.75 * n.distance]
+    # 3. Figure 3: Photometric robustness
+    generate_figure_03_robustness(assets_dir, metrics_df)
 
-    pts_3d, pts_2d = [], []
-    for m in good:
-        u_rs, v_rs = kp_rs[m.queryIdx].pt
-        u_i, v_i = int(round(u_rs)), int(round(v_rs))
-        if 0 <= u_i < 640 and 0 <= v_i < 480:
-            z_mm = pt_rs_raw[v_i, u_i]
-            if 300 < z_mm < 6000:
-                z_m = z_mm / 1000.0
-                pts_3d.append([
-                    (u_rs - K_RS[0, 2]) * z_m / K_RS[0, 0],
-                    (v_rs - K_RS[1, 2]) * z_m / K_RS[1, 1],
-                    z_m
-                ])
-                pts_2d.append([kp_st[m.trainIdx].pt[0], kp_st[m.trainIdx].pt[1]])
-    pts_3d, pts_2d = np.array(pts_3d), np.array(pts_2d)
-    success, rvec, tvec, inliers = cv2.solvePnPRansac(pts_3d, pts_2d, K_RECT, None, 3.0, 3000)
-    R_mat, _ = cv2.Rodrigues(rvec)
-    pt_rs_ref_depth = stereo.project_realsense_depth_to_stereo(
-        pt_rs_raw, R_mat, tvec, K_RS, K_RECT, (720, 1280), 0.3, 6.0
-    )
+    # 4. Figure 4: CNN architecture
+    generate_figure_04_cnn_architecture(assets_dir)
 
-    # Compute models for Adirondack and puncakTinggi
-    r_matcher = cv2.ximgproc.createRightMatcher(opt_matcher)
-    mid_dl16 = opt_matcher.compute(mid_im0, mid_im1)
-    mid_dr16 = r_matcher.compute(mid_im1, mid_im0)
-    mid_raw = mid_dl16.astype(np.float32) / 16.0
-    mid_r_raw = mid_dr16.astype(np.float32) / 16.0
-    mid_disp_opt, _ = stereo.compute_disparity_wls(opt_matcher, mid_im0, mid_im1)
+    # 5. Figures 5 and 6: CNN experiments
+    if cnn_hist_path.exists() and cnn_met_path.exists():
+        cnn_hist = pd.read_csv(cnn_hist_path)
+        with open(cnn_met_path, "r", encoding="utf-8") as f:
+            cnn_metrics = json.load(f)
 
-    gun_dl16 = opt_matcher.compute(pt_rect_l, pt_rect_r)
-    gun_dr16 = r_matcher.compute(pt_rect_r, pt_rect_l)
-    gun_raw = gun_dl16.astype(np.float32) / 16.0
-    gun_r_raw = gun_dr16.astype(np.float32) / 16.0
-    gun_disp_opt, _ = stereo.compute_disparity_wls(opt_matcher, pt_rect_l, pt_rect_r)
-    gun_depth_opt = stereo.disparity_to_depth(gun_disp_opt, K_RECT[0, 0], 0.097497)
+        generate_figure_05_cnn_learning(assets_dir, cnn_hist, cnn_metrics)
+        if cnn_samples_path.exists():
+            generate_figure_06_comparison(assets_dir, cnn_metrics, cnn_samples_path)
+    else:
+        print("CNN results missing. Run 'python cnn.py --epochs 15' to generate Figures 5 and 6.")
 
-    # 1. Figure 1: Stereo Geometry and Calibrated Pipeline
-    raw_pt_l, raw_pt_r = images_raw["puncakTinggi"]
-    generate_fig01_stereo_geometry(raw_pt_l, raw_pt_r, pt_rect_l, pt_rect_r)
+    # 6. Hero animated GIF
+    generate_stereo_loop_gif(assets_dir, disp_data, metrics_df)
 
-    # 2. Figure 2: Cross-Dataset Middlebury vs Gunung Validation
-    generate_fig02_middlebury_gunung(
-        mid_im0, mid_gt, mid_disp_opt, mid_mask,
-        pt_rect_l, pt_rs_ref_depth, gun_depth_opt
-    )
-
-    # 3. Figure 3: Filter Comparison Suite
-    generate_fig03_filters(
-        mid_im0, mid_raw, mid_r_raw, opt_matcher,
-        pt_rect_l, gun_raw, gun_r_raw
-    )
-
-    # 4. Figure 4: Accuracy-Coverage-CPU Pareto Frontier
-    generate_fig04_cpu_tradeoffs()
-
-    # 5. Figure 5: Four-Terrain Evaluation
-    generate_fig05_four_terrains(images_rect, opt_matcher)
-
-    # 6. Hero Looping GIF
-    generate_hero_loop_gif(images_rect, opt_matcher)
-
-    print("All visuals generated successfully.")
+    print("\n" + "=" * 72)
+    print("All scientific figures and animations generated successfully.")
+    print("=" * 72)
 
 
 if __name__ == "__main__":
-    generate_all_visuals()
+    main()

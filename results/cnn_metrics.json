@@ -1,0 +1,35 @@
+{
+  "model_parameters": 1054,
+  "epochs": 15,
+  "cpu_threads": 2,
+  "training_time_seconds": 2.2288728000130504,
+  "optimal_classical_threshold": 0.3636363636363636,
+  "classical_baseline": {
+    "threshold": 0.3636363636363636,
+    "accuracy": 91.05691056910568,
+    "precision": 87.96992481203007,
+    "recall": 95.1219512195122,
+    "f1": 91.40625000000001,
+    "confusion_matrix": {
+      "TP": 117,
+      "FP": 16,
+      "FN": 6,
+      "TN": 107
+    }
+  },
+  "tiny_cnn": {
+    "accuracy": 94.3089430894309,
+    "precision": 92.91338582677166,
+    "recall": 95.9349593495935,
+    "f1": 94.4,
+    "confusion_matrix": {
+      "TP": 118,
+      "FP": 9,
+      "FN": 5,
+      "TN": 114
+    },
+    "samples_evaluated": 246,
+    "inference_time_s": 0.006321299995761365,
+    "inference_ms_per_patch": 0.02569634144618441
+  }
+}

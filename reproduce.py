@@ -1,363 +1,336 @@
-"""Command-line reproduction runner for stereo matching experiments.
+"""Experiment runner and benchmark reproduction script.
 
-Supports:
-- --quick: Fast verification of FAST preset on sample scenes in < 1 second.
-- --profile: Component-level CPU and memory profiling across resolutions and threads.
-- --full: Complete benchmark evaluation of FAST, BALANCED, and QUALITY presets.
+Provides command-line entry points:
+- python reproduce.py --quick: Fast sanity verification (< 1 second) on synthetic scenes.
+- python reproduce.py --full: Complete procedural stereo benchmark across classical matchers and perturbations.
+- python reproduce.py --middlebury <path>: Optional Middlebury 2014 benchmark evaluation.
+- python reproduce.py --gunung <path> --calib <path>: Optional outdoor Gunung transfer evaluation.
 """
 
 import argparse
 import json
+import platform
+import sys
 import time
-import tracemalloc
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import cv2
 import numpy as np
 import pandas as pd
 
 import stereo
 
-DEFAULT_CALIB = r"D:\02_Riset\Research Paper\source_code\calibration\calib_params\stereo_params_advanced.npz"
-DEFAULT_GUNUNG = r"D:\02_Riset\Research Paper\source_code\comparison\gunung"
-DEFAULT_MID = r"data/middlebury/MiddEval3/trainingQ"
 
-K_RECT = np.array([
-    [964.68366, 0.0, 563.89656],
-    [0.0, 964.68366, 366.00543],
-    [0.0, 0.0, 1.0]
-], dtype=np.float64)
+def collect_environment_metadata() -> Dict[str, Any]:
+    """Gather hardware, runtime, and dependency metadata for reproducibility."""
+    env = {
+        "timestamp": datetime.now().isoformat(),
+        "platform": platform.platform(),
+        "python_version": sys.version.split()[0],
+        "processor": platform.processor() or platform.machine(),
+        "opencv_version": cv2.__version__,
+        "numpy_version": np.__version__,
+    }
+    try:
+        import torch
+        env["torch_version"] = torch.__version__
+        env["torch_cpu_threads"] = torch.get_num_threads()
+    except ImportError:
+        env["torch_version"] = None
 
-K_RS = np.array([
-    [615.0, 0.0, 320.0],
-    [0.0, 615.0, 240.0],
-    [0.0, 0.0, 1.0]
-], dtype=np.float64)
-
-
-def load_pfm(file_path: str) -> np.ndarray:
-    """Load Middlebury floating-point disparity map (PFM format)."""
-    with open(file_path, "rb") as f:
-        header = f.readline().decode("latin-1").strip()
-        color = (header == "PF")
-        dim_line = f.readline().decode("latin-1").strip()
-        while dim_line.startswith("#"):
-            dim_line = f.readline().decode("latin-1").strip()
-        width, height = map(int, dim_line.split())
-        scale = float(f.readline().decode("latin-1").strip())
-        endian = "<" if scale < 0 else ">"
-        data = np.fromfile(f, endian + "f")
-        shape = (height, width, 3) if color else (height, width)
-        data = np.reshape(data, shape)
-        data = np.flipud(data)
-        return data
+    return env
 
 
-def run_quick_verification(
-    calib_path: str,
-    gunung_root: str,
-    mid_root: str
-) -> None:
-    """Run fast verification in under two seconds using the FAST preset."""
-    print("=" * 80)
-    print("STEREO REPRODUCTION: QUICK VERIFICATION MODE")
-    print("=" * 80)
+def run_quick_verification() -> bool:
+    """Run fast unit verification on constant and layered synthetic scenes."""
+    print("=" * 72)
+    print("STEREO REPRODUCTION: QUICK VERIFICATION MODE (< 1 SECOND)")
+    print("=" * 72)
 
-    # 1. Calibration verification
-    print(f"Loading calibration: {calib_path}")
-    calib = stereo.load_calibration(calib_path)
-    maps_l, maps_r, Q = stereo.build_rectification_maps(calib, (1280, 720), use_cache=True)
-    baseline_mm = -calib["T"][0, 0]
-    fx_px = calib["mtx_left"][0, 0]
-    print(f"  Baseline B: {baseline_mm:.2f} mm | Focal length fx: {fx_px:.1f} px | fx*B: {baseline_mm*fx_px/1000.0:.2f} px*m")
+    # 1. Constant disparity scene
+    print("\n[Test 1] Planar Constant Disparity Scene (Shift = 16 px)...")
+    l_const, r_const, gt_const, mask_const = stereo.generate_constant_disparity_scene(
+        width=320, height=240, disparity=16, seed=42
+    )
 
-    # 2. Gunung verification
-    gunung_dir = Path(gunung_root)
-    sample_terrain = "puncakTinggi"
-    st_dir = gunung_dir / sample_terrain / "stereo"
-    if not st_dir.exists():
-        print(f"Gunung dataset path not accessible: {st_dir}")
+    bm_matcher = stereo.create_bm_matcher(num_disparities=48, block_size=9)
+    sgbm_matcher = stereo.create_sgbm_matcher(num_disparities=48, block_size=7)
+
+    disp_bm, t_bm = stereo.compute_disparity_bm(l_const, r_const, bm_matcher)
+    disp_sgbm, t_sgbm = stereo.compute_disparity_sgbm(l_const, r_const, sgbm_matcher)
+
+    bad_bm = stereo.compute_bad_pixel_rate(disp_bm, gt_const, mask_const, threshold=2.0)
+    bad_sgbm = stereo.compute_bad_pixel_rate(disp_sgbm, gt_const, mask_const, threshold=2.0)
+    mae_sgbm = stereo.compute_depth_mae(disp_sgbm, gt_const, mask_const)
+
+    print(f"  StereoBM:   Bad@2.0 = {bad_bm:5.2f}% | Latency = {t_bm:5.2f} ms")
+    print(f"  StereoSGBM: Bad@2.0 = {bad_sgbm:5.2f}% | Latency = {t_sgbm:5.2f} ms | MAE = {mae_sgbm:.3f} px")
+
+    # 2. Layered synthetic scene
+    print("\n[Test 2] Layered Synthetic Scene (3 layers, occlusions, low-texture zone)...")
+    l_layer, r_layer, gt_layer, mask_layer = stereo.generate_layered_synthetic_scene(
+        width=320, height=240, seed=42
+    )
+
+    disp_layer_bm, t_l_bm = stereo.compute_disparity_bm(l_layer, r_layer, bm_matcher)
+    disp_layer_sgbm, t_l_sgbm = stereo.compute_disparity_sgbm(l_layer, r_layer, sgbm_matcher)
+
+    bad_l_bm = stereo.compute_bad_pixel_rate(disp_layer_bm, gt_layer, mask_layer, threshold=2.0)
+    bad_l_sgbm = stereo.compute_bad_pixel_rate(disp_layer_sgbm, gt_layer, mask_layer, threshold=2.0)
+    cov_l_sgbm = stereo.compute_valid_coverage(disp_layer_sgbm, mask_layer)
+    mae_l_sgbm = stereo.compute_depth_mae(disp_layer_sgbm, gt_layer, mask_layer)
+
+    print(f"  StereoBM:   Bad@2.0 = {bad_l_bm:5.2f}% | Latency = {t_l_bm:5.2f} ms")
+    print(f"  StereoSGBM: Bad@2.0 = {bad_l_sgbm:5.2f}% | Latency = {t_l_sgbm:5.2f} ms | Coverage = {cov_l_sgbm:5.1f}% | MAE = {mae_l_sgbm:.3f} px")
+
+    # 3. Single-patch educational SAD matching
+    print("\n[Test 3] Educational Single-Patch SAD Profile (Point x=110, y=100 on Foreground)...")
+    disps, costs, best_d, min_cost = stereo.compute_sad_cost_profile(
+        l_layer, r_layer, x=110, y=100, patch_size=9, max_disp=48
+    )
+    true_d = int(gt_layer[100, 110])
+    print(f"  True Disparity: {true_d} px | SAD Minimum Disparity: {best_d} px | Difference: {abs(best_d - true_d)} px")
+
+    print("\n" + "=" * 72)
+    print("Quick verification finished successfully.")
+    print("=" * 72)
+    return True
+
+
+def run_full_benchmark(results_dir: str = "results") -> None:
+    """Execute complete classical stereo benchmark across scenes and perturbations."""
+    out_dir = Path(results_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 72)
+    print("EXPERIMENT 2: CLASSICAL STEREO BENCHMARK & ROBUSTNESS STUDY")
+    print("=" * 72)
+
+    perturbations = [
+        "clean",
+        "brightness_up",
+        "brightness_down",
+        "contrast_low",
+        "gaussian_noise",
+        "gamma_high",
+    ]
+
+    scenes = ["constant", "layered"]
+    matchers = ["StereoBM", "StereoSGBM", "StereoSGBM+CLAHE"]
+
+    records: List[Dict[str, Any]] = []
+
+    # Cache sample disparity arrays for publication figures
+    saved_arrays: Dict[str, Any] = {}
+
+    for scene_name in scenes:
+        print(f"\n--- Scene: {scene_name.upper()} ---")
+
+        if scene_name == "constant":
+            left_base, right_base, gt, valid_mask = stereo.generate_constant_disparity_scene(
+                width=320, height=240, disparity=16, seed=42
+            )
+        else:
+            left_base, right_base, gt, valid_mask = stereo.generate_layered_synthetic_scene(
+                width=320, height=240, seed=42
+            )
+
+        saved_arrays[f"{scene_name}_left"] = left_base
+        saved_arrays[f"{scene_name}_right_clean"] = right_base
+        saved_arrays[f"{scene_name}_gt"] = gt
+        saved_arrays[f"{scene_name}_mask"] = valid_mask
+
+        bm_matcher = stereo.create_bm_matcher(num_disparities=48, block_size=9)
+        sgbm_matcher = stereo.create_sgbm_matcher(num_disparities=48, block_size=7)
+
+        for pert in perturbations:
+            pert_mode = "none" if pert == "clean" else pert
+            right_pert = stereo.apply_perturbation(right_base, pert_mode, seed=42)
+            saved_arrays[f"{scene_name}_right_{pert}"] = right_pert
+
+            for matcher_name in matchers:
+                if matcher_name == "StereoBM":
+                    disp, runtime_ms = stereo.compute_disparity_bm(left_base, right_pert, bm_matcher)
+                elif matcher_name == "StereoSGBM":
+                    disp, runtime_ms = stereo.compute_disparity_sgbm(left_base, right_pert, sgbm_matcher, use_clahe=False)
+                elif matcher_name == "StereoSGBM+CLAHE":
+                    disp, runtime_ms = stereo.compute_disparity_sgbm(left_base, right_pert, sgbm_matcher, use_clahe=True)
+                else:
+                    raise ValueError(f"Unknown matcher: {matcher_name}")
+
+                bad1 = stereo.compute_bad_pixel_rate(disp, gt, valid_mask, threshold=1.0)
+                bad2 = stereo.compute_bad_pixel_rate(disp, gt, valid_mask, threshold=2.0)
+                bad2_ca = stereo.compute_bad_pixel_rate(disp, gt, valid_mask, threshold=2.0, completeness_aware=True)
+                mae = stereo.compute_depth_mae(disp, gt, valid_mask)
+                rmse = stereo.compute_depth_rmse(disp, gt, valid_mask)
+                cov = stereo.compute_valid_coverage(disp, valid_mask)
+
+                rec = {
+                    "scene": scene_name,
+                    "perturbation": pert,
+                    "matcher": matcher_name,
+                    "bad_1.0_pct": round(bad1, 3),
+                    "bad_2.0_pct": round(bad2, 3),
+                    "bad_2.0_ca_pct": round(bad2_ca, 3),
+                    "mae_px": round(mae, 3) if not np.isnan(mae) else None,
+                    "rmse_px": round(rmse, 3) if not np.isnan(rmse) else None,
+                    "coverage_pct": round(cov, 2),
+                    "runtime_ms": round(runtime_ms, 2)
+                }
+                records.append(rec)
+
+                # Save key sample disparity maps for visualization
+                if pert in ["clean", "gaussian_noise", "contrast_low", "brightness_up"]:
+                    key = f"{scene_name}_{pert}_{matcher_name.lower().replace('+', '_')}_disp"
+                    saved_arrays[key] = disp
+
+            clean_sgbm = [r for r in records if r["scene"] == scene_name and r["perturbation"] == pert and r["matcher"] == "StereoSGBM"][0]
+            print(f"  {pert:<16} | SGBM Bad@2: {clean_sgbm['bad_2.0_pct']:5.2f}% | Cov: {clean_sgbm['coverage_pct']:5.1f}% | Latency: {clean_sgbm['runtime_ms']:5.2f} ms")
+
+    # Run educational single-patch SAD scanline example
+    l_layer = saved_arrays["layered_left"]
+    r_layer = saved_arrays["layered_right_clean"]
+    disps, sad_costs, best_d, min_cost = stereo.compute_sad_cost_profile(
+        l_layer, r_layer, x=110, y=100, patch_size=9, max_disp=48
+    )
+    true_d = int(saved_arrays["layered_gt"][100, 110])
+
+    sad_dict = {
+        "ref_x": 110,
+        "ref_y": 100,
+        "patch_size": 9,
+        "true_disparity": true_d,
+        "best_disparity": best_d,
+        "min_cost": float(min_cost),
+        "disparities": disps.tolist(),
+        "costs": [float(c) if np.isfinite(c) else None for c in sad_costs]
+    }
+    with open(out_dir / "sad_profile.json", "w", encoding="utf-8") as f:
+        json.dump(sad_dict, f, indent=2)
+
+    # Save metrics table
+    metrics_df = pd.DataFrame(records)
+    metrics_csv = out_dir / "metrics.csv"
+    metrics_df.to_csv(metrics_csv, index=False)
+    print(f"\nSaved metrics table to: {metrics_csv}")
+
+    # Save disparity arrays for visualize.py
+    np.savez_compressed(out_dir / "sample_disparities.npz", **saved_arrays)
+    print(f"Saved sample disparity maps to: {out_dir / 'sample_disparities.npz'}")
+
+    # Save environment metadata
+    env = collect_environment_metadata()
+    env_json = out_dir / "environment.json"
+    with open(env_json, "w", encoding="utf-8") as f:
+        json.dump(env, f, indent=2)
+    print(f"Saved environment metadata to:  {env_json}")
+
+    print("\n" + "=" * 72)
+    print("Full benchmark completed.")
+    print("=" * 72)
+
+
+def run_middlebury_optional(mid_path: str) -> None:
+    """Optional evaluation on Middlebury 2014 dataset if path is provided."""
+    p = Path(mid_path)
+    if not p.exists():
+        print(f"Middlebury path does not exist: {mid_path}")
         return
 
-    raw_l = cv2.imread(str(st_dir / "left_0000.png"))
-    raw_r = cv2.imread(str(st_dir / "right_0000.png"))
-    rect_l, rect_r = stereo.rectify_pair(raw_l, raw_r, maps_l, maps_r)
-    print(f"Loaded and rectified {sample_terrain} ({rect_l.shape[1]}x{rect_l.shape[0]})")
+    print("=" * 72)
+    print(f"OPTIONAL MIDDLEBURY 2014 EVALUATION: {mid_path}")
+    print("=" * 72)
 
-    # Run FAST preset
-    disp_fast, stats_fast = stereo.run_stereo_pipeline(rect_l, rect_r, preset="FAST")
-    depth_fast = stereo.disparity_to_depth(disp_fast, fx_px, baseline_mm / 1000.0)
+    scenes = [d for d in p.iterdir() if d.is_dir() and (d / "im0.png").exists()]
+    if not scenes:
+        print("No valid scene folders found with im0.png")
+        return
 
-    # Run BALANCED preset
-    disp_bal, stats_bal = stereo.run_stereo_pipeline(rect_l, rect_r, preset="BALANCED")
-    depth_bal = stereo.disparity_to_depth(disp_bal, fx_px, baseline_mm / 1000.0)
+    matcher = stereo.create_sgbm_matcher(num_disparities=160, block_size=7)
 
-    print("\n[Gunung Outdoor Results: puncakTinggi]")
-    print(f"  FAST Preset:     Coverage = {stats_fast['valid_coverage_pct']:5.1f}% | Wall Time = {stats_fast['wall_ms']:5.1f} ms ({1000.0/stats_fast['wall_ms']:.1f} FPS)")
-    print(f"  BALANCED Preset: Coverage = {stats_bal['valid_coverage_pct']:5.1f}% | Wall Time = {stats_bal['wall_ms']:5.1f} ms ({1000.0/stats_bal['wall_ms']:.1f} FPS)")
+    for sc in scenes[:4]:
+        im0 = cv2.imread(str(sc / "im0.png"))
+        im1 = cv2.imread(str(sc / "im1.png"))
+        gt_file = sc / "disp0GT.pfm"
+        mask_file = sc / "mask0nocc.png"
 
-    # 3. Middlebury verification
-    mid_p = Path(mid_root) / "Adirondack"
-    if mid_p.exists():
-        im0 = cv2.imread(str(mid_p / "im0.png"))
-        im1 = cv2.imread(str(mid_p / "im1.png"))
-        gt = load_pfm(str(mid_p / "disp0GT.pfm"))
-        mask = cv2.imread(str(mid_p / "mask0nocc.png"), cv2.IMREAD_GRAYSCALE) == 255
+        disp, t_ms = stereo.compute_disparity_sgbm(im0, im1, matcher)
 
-        d_mid_fast, s_mid_fast = stereo.run_stereo_pipeline(im0, im1, preset="FAST")
-        d_mid_bal, s_mid_bal = stereo.run_stereo_pipeline(im0, im1, preset="BALANCED")
-
-        bad_fast = stereo.compute_completeness_aware_bad_pixel(d_mid_fast, gt, mask, threshold=2.0)
-        bad_bal = stereo.compute_completeness_aware_bad_pixel(d_mid_bal, gt, mask, threshold=2.0)
-        mae_fast = np.mean(np.abs(d_mid_fast[mask & (d_mid_fast > 0)] - gt[mask & (d_mid_fast > 0)]))
-        mae_bal = np.mean(np.abs(d_mid_bal[mask & (d_mid_bal > 0)] - gt[mask & (d_mid_bal > 0)]))
-
-        print("\n[Middlebury Benchmark Ground Truth: Adirondack]")
-        print(f"  FAST Preset:     Bad-2.0 = {bad_fast:5.2f}% | MAE = {mae_fast:5.2f} px | Latency = {s_mid_fast['wall_ms']:5.1f} ms")
-        print(f"  BALANCED Preset: Bad-2.0 = {bad_bal:5.2f}% | MAE = {mae_bal:5.2f} px | Latency = {s_mid_bal['wall_ms']:5.1f} ms")
-
-    print("=" * 80)
-    print("Quick verification PASSED successfully.")
-
-
-def run_pipeline_profiling(calib_path: str, gunung_root: str) -> None:
-    """Run component-level pipeline profiler across multiscale resolutions and threads."""
-    print("=" * 80)
-    print("STEREO REPRODUCTION: COMPONENT-LEVEL CPU PROFILING")
-    print("=" * 80)
-
-    calib = stereo.load_calibration(calib_path)
-    maps_l, maps_r, _ = stereo.build_rectification_maps(calib, (1280, 720), use_cache=True)
-
-    st_dir = Path(gunung_root) / "puncakTinggi" / "stereo"
-    raw_l = cv2.imread(str(st_dir / "left_0000.png"))
-    raw_r = cv2.imread(str(st_dir / "right_0000.png"))
-
-    scales = [(1.0, "1280x720", 160), (0.5, "640x360", 80), (0.25, "320x180", 48)]
-    prof_rows = []
-
-    print("\n--- Multiscale Resolution Scaling (16 threads) ---")
-    for scale, res_name, num_disp in scales:
-        w_s, h_s = int(1280 * scale), int(720 * scale)
-        if scale != 1.0:
-            l_in = cv2.resize(raw_l, (w_s, h_s), interpolation=cv2.INTER_AREA)
-            r_in = cv2.resize(raw_r, (w_s, h_s), interpolation=cv2.INTER_AREA)
+        if gt_file.exists() and mask_file.exists():
+            gt = stereo.load_pfm(str(gt_file))
+            mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE) == 255
+            bad2 = stereo.compute_bad_pixel_rate(disp, gt, mask, threshold=2.0)
+            mae = stereo.compute_depth_mae(disp, gt, mask)
+            cov = stereo.compute_valid_coverage(disp, mask)
+            print(f"  {sc.name:<16} | Bad@2.0: {bad2:5.2f}% | MAE: {mae:5.2f} px | Cov: {cov:5.1f}% | Latency: {t_ms:5.1f} ms")
         else:
-            l_in, r_in = raw_l, raw_r
-
-        maps_ls, maps_rs, _ = stereo.build_rectification_maps(calib, (w_s, h_s), use_cache=True)
-        matcher = stereo.create_sgbm_matcher({
-            "minDisparity": 0, "numDisparities": num_disp, "blockSize": 7,
-            "P1": 150, "P2": 1200, "disp12MaxDiff": 1, "uniquenessRatio": 10,
-            "speckleWindowSize": 100, "speckleRange": 2, "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY
-        })
-        r_matcher = cv2.ximgproc.createRightMatcher(matcher)
-        wls = cv2.ximgproc.createDisparityWLSFilter(matcher)
-        wls.setLambda(8000.0)
-        wls.setSigmaColor(1.5)
-
-        # Warmup
-        for _ in range(3):
-            rl = cv2.remap(l_in, maps_ls[0], maps_ls[1], cv2.INTER_LINEAR)
-            rr = cv2.remap(r_in, maps_rs[0], maps_rs[1], cv2.INTER_LINEAR)
-            dl = matcher.compute(rl, rr)
-            dr = r_matcher.compute(rr, rl)
-            df = wls.filter(dl, rl, None, dr)
-
-        # Timed run (10 iterations)
-        t_remap, t_sgbm_l, t_sgbm_r, t_wls = [], [], [], []
-        tracemalloc.start()
-        for _ in range(10):
-            t0 = time.perf_counter()
-            rl = cv2.remap(l_in, maps_ls[0], maps_ls[1], cv2.INTER_LINEAR)
-            rr = cv2.remap(r_in, maps_rs[0], maps_rs[1], cv2.INTER_LINEAR)
-            t_remap.append((time.perf_counter() - t0) * 1000.0)
-
-            t0 = time.perf_counter()
-            dl = matcher.compute(rl, rr)
-            t_sgbm_l.append((time.perf_counter() - t0) * 1000.0)
-
-            t0 = time.perf_counter()
-            dr = r_matcher.compute(rr, rl)
-            t_sgbm_r.append((time.perf_counter() - t0) * 1000.0)
-
-            t0 = time.perf_counter()
-            df = wls.filter(dl, rl, None, dr)
-            t_wls.append((time.perf_counter() - t0) * 1000.0)
-
-        current, peak = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-
-        tot_p50 = np.median(t_remap) + np.median(t_sgbm_l) + np.median(t_sgbm_r) + np.median(t_wls)
-        print(f"  {res_name:10s} (scale {scale:4.2f}): Total P50 = {tot_p50:6.1f} ms | Remap = {np.median(t_remap):4.1f} ms | SGBM_L = {np.median(t_sgbm_l):5.1f} ms | SGBM_R = {np.median(t_sgbm_r):5.1f} ms | WLS = {np.median(t_wls):4.1f} ms | RAM = {peak/(1024*1024):4.1f} MB")
-        prof_rows.append({
-            "resolution": res_name,
-            "scale": scale,
-            "remap_ms": np.median(t_remap),
-            "sgbm_left_ms": np.median(t_sgbm_l),
-            "sgbm_right_ms": np.median(t_sgbm_r),
-            "wls_ms": np.median(t_wls),
-            "total_ms": tot_p50,
-            "peak_ram_mb": peak / (1024 * 1024)
-        })
-
-    df_p = pd.DataFrame(prof_rows)
-    out_dir = Path("results")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    df_p.to_csv(out_dir / "profile_summary.csv", index=False)
-    print(f"\nSaved profile results to: {out_dir / 'profile_summary.csv'}")
-    print("=" * 80)
+            print(f"  {sc.name:<16} | Disparity computed ({disp.shape[1]}x{disp.shape[0]}) in {t_ms:5.1f} ms")
 
 
-def run_full_reproduction(
-    calib_path: str,
-    gunung_root: str,
-    mid_root: str
-) -> None:
-    """Run full benchmark reproduction across Middlebury Dev, Held-out, and 4 Gunung terrains."""
-    print("=" * 80)
-    print("STEREO REPRODUCTION: FULL BENCHMARK EXPERIMENT")
-    print("=" * 80)
+def run_gunung_optional(gunung_path: str, calib_path: str) -> None:
+    """Optional transfer demonstration on outdoor calibrated Gunung dataset."""
+    g_p = Path(gunung_path)
+    c_p = Path(calib_path)
 
-    calib = stereo.load_calibration(calib_path)
-    maps_l, maps_r, _ = stereo.build_rectification_maps(calib, (1280, 720), use_cache=True)
-    baseline_m = -calib["T"][0, 0] / 1000.0
-    fx_px = calib["mtx_left"][0, 0]
+    if not g_p.exists():
+        print(f"Gunung path does not exist: {gunung_path}")
+        return
+    if not c_p.exists():
+        print(f"Calibration file does not exist: {calib_path}")
+        return
 
-    presets = ["FAST", "BALANCED", "QUALITY"]
-    rows = []
+    print("=" * 72)
+    print(f"OPTIONAL OUTDOOR GUNUNG TRANSFER EVALUATION")
+    print(f"  Data:  {gunung_path}")
+    print(f"  Calib: {calib_path}")
+    print("=" * 72)
 
-    # 1. Gunung Evaluation
+    calib = stereo.load_calibration(str(c_p))
+    maps_l, maps_r, Q = stereo.build_rectification_maps(calib, (1280, 720))
+    matcher = stereo.create_sgbm_matcher(num_disparities=160, block_size=7)
+
     terrains = ["puncakTinggi", "puncakWarung", "tanggaBiru", "tanggaKuning"]
-    print("\n--- Evaluating Gunung Terrains ---")
-    for t in terrains:
-        st_dir = Path(gunung_root) / t / "stereo"
-        raw_l = cv2.imread(str(st_dir / "left_0000.png"))
-        raw_r = cv2.imread(str(st_dir / "right_0000.png"))
-        rect_l, rect_r = stereo.rectify_pair(raw_l, raw_r, maps_l, maps_r)
-
-        # RealSense reference
-        rs_ref_path = Path(gunung_root) / t / "hardware" / "realsense"
-        has_rs = (rs_ref_path / "depth_0000.npz").exists()
-        ref_depth = None
-        ref_status = "OMITTED_OUT_OF_RANGE" if t == "puncakWarung" else "VERIFIED"
-
-        if has_rs and t != "puncakWarung":
-            rs_raw = np.load(str(rs_ref_path / "depth_0000.npz"))["depth_map"]
-            rs_rgb = cv2.imread(str(rs_ref_path / "rgb_0000.png"))
-            sift = cv2.SIFT_create(2500)
-            kp_st, des_st = sift.detectAndCompute(rect_l, None)
-            kp_rs, des_rs = sift.detectAndCompute(rs_rgb, None)
-            bf = cv2.BFMatcher(cv2.NORM_L2)
-            matches = bf.knnMatch(des_rs, des_st, k=2)
-            good = [m for m, n in matches if m.distance < 0.75 * n.distance]
-            pts_3d, pts_2d = [], []
-            for m in good:
-                u_rs, v_rs = kp_rs[m.queryIdx].pt
-                ui, vi = int(round(u_rs)), int(round(v_rs))
-                if 0 <= ui < 640 and 0 <= vi < 480:
-                    z_mm = rs_raw[vi, ui]
-                    if 300 < z_mm < 6000:
-                        zm = z_mm / 1000.0
-                        pts_3d.append([(u_rs - K_RS[0, 2]) * zm / K_RS[0, 0], (v_rs - K_RS[1, 2]) * zm / K_RS[1, 1], zm])
-                        pts_2d.append([kp_st[m.trainIdx].pt[0], kp_st[m.trainIdx].pt[1]])
-            if len(pts_3d) >= 10:
-                pts_3d, pts_2d = np.array(pts_3d), np.array(pts_2d)
-                _, rvec, tvec, _ = cv2.solvePnPRansac(pts_3d, pts_2d, K_RECT, None, 3.0, 2000)
-                R_mat, _ = cv2.Rodrigues(rvec)
-                ref_depth = stereo.project_realsense_depth_to_stereo(rs_raw, R_mat, tvec, K_RS, K_RECT, (720, 1280), 0.3, 6.0)
-
-        for p_name in presets:
-            disp, stats = stereo.run_stereo_pipeline(rect_l, rect_r, preset=p_name)
-            depth = stereo.disparity_to_depth(disp, fx_px, baseline_m)
-
-            m_depth = {}
-            if ref_depth is not None:
-                m_depth = stereo.compute_metric_depth_errors(depth, ref_depth, min_z=0.4, max_z=4.0)
-
-            print(f"  {t:15s} | Preset {p_name:8s}: Cov = {stats['valid_coverage_pct']:5.1f}% | Wall = {stats['wall_ms']:5.1f} ms" +
-                  (f" | MedErr = {m_depth.get('median_m', np.nan)*100:4.1f} cm | Delta125 = {m_depth.get('delta_125_pct', np.nan):4.1f}%" if ref_depth is not None else " | Ref: OMITTED"))
-
-            rows.append({
-                "dataset": "Gunung",
-                "scene": t,
-                "split": "field",
-                "config": p_name,
-                "coverage_pct": stats["valid_coverage_pct"],
-                "latency_ms": stats["wall_ms"],
-                "depth_mae_m": m_depth.get("mae_m", np.nan),
-                "depth_med_m": m_depth.get("median_m", np.nan),
-                "depth_rmse_m": m_depth.get("rmse_m", np.nan),
-                "delta_125_pct": m_depth.get("delta_125_pct", np.nan),
-                "reference_status": ref_status
-            })
-
-    # 2. Middlebury Evaluation
-    mid_scenes = [
-        ("Adirondack", "dev"), ("Motorcycle", "dev"), ("Playtable", "dev"),
-        ("Jadeplant", "heldout"), ("Piano", "heldout"), ("Pipes", "heldout")
-    ]
-    print("\n--- Evaluating Middlebury Benchmark ---")
-    for sc, split in mid_scenes:
-        sc_dir = Path(mid_root) / sc
-        if not sc_dir.exists():
+    for t_name in terrains:
+        st_dir = g_p / t_name / "stereo"
+        left_path = st_dir / "left_0000.png"
+        right_path = st_dir / "right_0000.png"
+        if not (left_path.exists() and right_path.exists()):
             continue
 
-        im0 = cv2.imread(str(sc_dir / "im0.png"))
-        im1 = cv2.imread(str(sc_dir / "im1.png"))
-        gt = load_pfm(str(sc_dir / "disp0GT.pfm"))
-        mask = cv2.imread(str(sc_dir / "mask0nocc.png"), cv2.IMREAD_GRAYSCALE) == 255
+        raw_l = cv2.imread(str(left_path))
+        raw_r = cv2.imread(str(right_path))
+        rect_l, rect_r = stereo.rectify_pair(raw_l, raw_r, maps_l, maps_r)
 
-        for p_name in presets:
-            disp, stats = stereo.run_stereo_pipeline(im0, im1, preset=p_name)
-            bad2 = stereo.compute_completeness_aware_bad_pixel(disp, gt, mask, threshold=2.0)
-            valid_eval = mask & (disp > 0) & (gt > 0) & (gt < 1e8)
-            mae_px = float(np.mean(np.abs(disp[valid_eval] - gt[valid_eval]))) if np.sum(valid_eval) > 0 else np.nan
-
-            print(f"  {sc:15s} ({split:7s}) | Preset {p_name:8s}: Bad-2.0 = {bad2:5.2f}% | MAE = {mae_px:4.2f} px | Cov = {stats['valid_coverage_pct']:5.1f}% | Wall = {stats['wall_ms']:5.1f} ms")
-            rows.append({
-                "dataset": "Middlebury",
-                "scene": sc,
-                "split": split,
-                "config": p_name,
-                "coverage_pct": stats["valid_coverage_pct"],
-                "latency_ms": stats["wall_ms"],
-                "bad_2_0_pct": bad2,
-                "mae_px": mae_px,
-                "reference_status": "GT_Disparity"
-            })
-
-    df = pd.DataFrame(rows)
-    out_dir = Path("results")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_dir / "reproduction_summary.csv", index=False)
-
-    with open(out_dir / "best_params.json", "w", encoding="utf-8") as f:
-        json.dump(stereo.PIPELINE_PRESETS, f, indent=2)
-
-    print(f"\nSaved reproduction results to: {out_dir / 'reproduction_summary.csv'}")
-    print(f"Saved frozen configurations to: {out_dir / 'best_params.json'}")
-    print("=" * 80)
-    print("Full benchmark reproduction finished successfully.")
+        disp, t_ms = stereo.compute_disparity_sgbm(rect_l, rect_r, matcher)
+        cov = stereo.compute_valid_coverage(disp)
+        print(f"  {t_name:<16} | Coverage: {cov:5.1f}% | Latency: {t_ms:5.1f} ms")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Reproduce classical stereo matching experiments.")
-    parser.add_argument("--quick", action="store_true", help="Run fast verification on sample scenes in < 1s.")
-    parser.add_argument("--profile", action="store_true", help="Run component profiler across scales and threads.")
-    parser.add_argument("--full", action="store_true", help="Run full benchmark evaluation across all scenes.")
-    parser.add_argument("--calib", type=str, default=DEFAULT_CALIB, help="Path to calibration NPZ")
-    parser.add_argument("--gunung", type=str, default=DEFAULT_GUNUNG, help="Path to Gunung dataset root")
-    parser.add_argument("--middlebury", type=str, default=DEFAULT_MID, help="Path to Middlebury trainingQ directory")
-
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Stereo matching reproduction and evaluation runner.")
+    parser.add_argument("--quick", action="store_true", help="Run fast verification (< 1 second) on synthetic scenes.")
+    parser.add_argument("--full", action="store_true", help="Run complete benchmark across scenes, matchers, and perturbations.")
+    parser.add_argument("--results-dir", type=str, default="results", help="Directory to save output metrics and arrays.")
+    parser.add_argument("--middlebury", type=str, default=None, help="Optional path to Middlebury 2014 dataset directory.")
+    parser.add_argument("--gunung", type=str, default=None, help="Optional path to Gunung dataset directory.")
+    parser.add_argument("--calib", type=str, default=None, help="Optional path to camera calibration NPZ file.")
     args = parser.parse_args()
 
-    if args.profile:
-        run_pipeline_profiling(args.calib, args.gunung)
-    elif args.full:
-        run_full_reproduction(args.calib, args.gunung, args.middlebury)
-    else:
-        run_quick_verification(args.calib, args.gunung, args.middlebury)
+    if args.middlebury:
+        run_middlebury_optional(args.middlebury)
+        return
+
+    if args.gunung:
+        calib_file = args.calib or r"D:\02_Riset\Research Paper\source_code\calibration\calib_params\stereo_params_advanced.npz"
+        run_gunung_optional(args.gunung, calib_file)
+        return
+
+    if args.quick or not args.full:
+        run_quick_verification()
+
+    if args.full:
+        run_full_benchmark(results_dir=args.results_dir)
 
 
 if __name__ == "__main__":
