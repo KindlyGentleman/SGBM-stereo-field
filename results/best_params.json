@@ -1,0 +1,14 @@
+{
+  "minDisparity": 0,
+  "numDisparities": 160,
+  "blockSize": 7,
+  "P1": 150,
+  "P2": 1200,
+  "disp12MaxDiff": 1,
+  "uniquenessRatio": 10,
+  "speckleWindowSize": 100,
+  "speckleRange": 2,
+  "mode": 2,
+  "wls_lambda": 8000.0,
+  "wls_sigma": 1.5
+}
