@@ -1,70 +1,72 @@
 # Playing with Stereo Matching
 
-A small experiment investigating how far classical stereo matching (StereoSGBM and edge-aware WLS filtering) can go on four rugged outdoor terrains after physical camera calibration and epipolar rectification.
+A small experiment investigating how far classical stereo matching (StereoSGBM and edge-aware WLS filtering) can go on four rugged outdoor terrains after physical camera calibration, verified against Middlebury ground truth and registered Intel RealSense reference depth.
 
-![Stereo matching evolution across four mountain terrains](assets/terrain_loop.gif)
+![Stereo matching evolution across four mountain terrains](assets/stereo_loop.gif)
 
-## Why I tried this
+## Why stereo gets difficult outdoors
 
-Deep neural networks dominate modern stereo matching benchmarks, but their compute and memory demands make them heavy for small embedded robots, low-power drones, and microcontroller-class platforms. Classical algorithms like Semi-Global Block Matching (StereoSGBM) run deterministically on a standard CPU with minimal memory footprint.
+Deep neural networks dominate modern stereo benchmarks, but their compute and memory demands make them heavy for small embedded robots and low-power field platforms. Classical algorithms like Semi-Global Block Matching (StereoSGBM) run deterministically on a standard CPU with a minimal memory footprint.
 
-On paper, SGBM needs only two things: collinear horizontal scanlines and roughly Lambertian reflectance. In an unstructured outdoor environment, however, nature refuses to cooperate. Solar glare saturates sensors, wind-blown grass creates micro-occlusions, gravel repeats fine texture patterns, and mechanical shock knocks dual cameras out of collinear alignment. I wanted to see how far classical stereo reconstruction could be pushed using real camera calibration, sequential hyperparameter tuning, and edge-preserving filtering, and where classical matching hits fundamental physical limits.
+On paper, SGBM needs only two conditions: collinear horizontal scanlines and roughly Lambertian surface reflectance. In unstructured volcanic environments, nature refuses to cooperate. Solar glare saturates sensors, wind-blown shrubs create micro-occlusions, volcanic gravel repeats fine texture patterns, and mechanical vibration knocks dual cameras out of collinear alignment. I wanted to see how far classical stereo reconstruction could be pushed using real camera calibration, sequential tuning, and edge-preserving filtering, and where classical matching hits fundamental physical limits.
 
-## First, the cameras had to agree
+## The cameras needed calibration first
 
-Before touching matching parameters, I had to inspect the camera geometry. Running feature matching (ORB with RANSAC fundamental matrix estimation) on raw image pairs from the Gunung collection revealed a severe physical misalignment: a median vertical correspondence displacement of **28.0 px** in `puncakTinggi`. Standard stereo algorithms search strictly along horizontal scanlines ($\Delta y = 0$). With a 28 px vertical jump, matching failed immediately.
+Before touching matching parameters, I inspected the camera geometry. Running feature matching (ORB with RANSAC fundamental matrix estimation) on raw image pairs from the Gunung collection revealed a severe physical misalignment: a median vertical correspondence displacement of **28.0 px** in `puncakTinggi`. Standard stereo algorithms search strictly along horizontal scanlines ($\Delta y = 0$). With a 28 px vertical jump, matching failed immediately.
 
-![Calibration and epipolar rectification comparison](assets/fig01_rectification.png)
-
-I loaded the physical calibration archive (`stereo_params_advanced.npz`) containing the camera matrices, distortion coefficients, rotation matrix $R$, and translation vector $T$ ($B = 97.40$ mm baseline, $f \approx 927.9$ px). Using `cv2.stereoRectify` and `cv2.initUndistortRectifyMap`, I remapped the dual image planes into virtual coplanar alignment.
+I loaded the physical calibration archive (`stereo_params_advanced.npz`) containing the camera matrices, distortion coefficients, rotation matrix $R$, and translation vector $T$ ($B = 97.50$ mm baseline, $f \approx 964.7$ px). Using `cv2.stereoRectify` and `cv2.initUndistortRectifyMap`, I remapped the dual image planes into collinear epipolar alignment.
 
 The calibrated rectification collapsed the median vertical displacement from **28.0 px down to 2.1 px** (90th percentile: 3.6 px) on `puncakTinggi`, and down to **1.0 px** on `tanggaBiru` and `tanggaKuning`. Only after this geometric correction could horizontal stereo matching succeed.
 
-## Four terrains, four different problems
+## From Middlebury to the mountain
 
-I evaluated the calibrated pipeline across all four distinct terrain captures in the dataset:
+To benchmark the pipeline fairly, I used two distinct domains: the controlled Middlebury 2014 indoor benchmark (with structured-light ground truth) and the real-world outdoor Gunung dataset.
 
-![Four distinct terrain captures in the Gunung dataset](assets/fig02_four_terrains.png)
+![Cross-dataset pipeline validation on Middlebury and Gunung](assets/fig01_cross_dataset.png)
 
-Each folder presented a different physical failure mechanism:
+On Middlebury (Row 1), ground truth is measured in sub-pixel disparity. On Gunung (Row 2), the physical world requires metric depth in meters. The calibrated classical pipeline transferred reliably from indoor benchmarks to outdoor volcanic terrain, producing sharp contours while exposing invalid sky regions.
 
-1. **puncakTinggi (Volcanic Ridge):** Over-exposed sky where 16.8% of pixels exceed intensity 250. Zero texture gradient causes complete correlation ambiguity, while the volcanic gravel foreground contains repetitive micro-stones.
-2. **puncakWarung (Mountain Stall):** A sheltered wooden stall next to a hillside path. High dynamic range between dark shaded porch roofs and bright outdoor fog, accompanied by distance boundaries.
-3. **tanggaBiru (Blue Stairway):** A steep concrete staircase with blue-painted iron railings and wild shrubbery. Thin leaves create semi-transparent micro-occlusions that cause boundary bleeding.
-4. **tanggaKuning (Yellow Stairway):** Narrow stone steps bordered by yellow railings and a steep cliff slope. Repeating metal bars produce localized false correlation peaks.
+## Why my first disparity maps looked wrong
 
-| Terrain Folder | Pairs | Resolution | Main Environmental Challenge | Epipolar Residual (P50 / P90) |
-| :--- | :---: | :---: | :--- | :---: |
-| `puncakTinggi` | 1 | $1280 \times 720$ | 16.8% sky saturation, low gradient, foreground gravel | 2.1 px / 3.6 px |
-| `puncakWarung` | 1 | $1280 \times 720$ | Extreme dynamic range, sheltered shadow, fog | 6.0 px / 8.0 px |
-| `tanggaBiru` | 1 | $1280 \times 720$ | Steep concrete slope, thin shrub micro-occlusions | 1.0 px / 2.5 px |
-| `tanggaKuning` | 1 | $1280 \times 720$ | Repeating railing texture, steep dropoff geometry | 1.0 px / 2.4 px |
+My earliest outdoor reconstruction attempts produced four severe artifacts:
 
-## Where default SGBM struggled
+1. **Near-field truncation:** The nominal 128 disparity levels at $1280 \times 720$ only represented objects down to $Z \approx 0.70$ m. Boulders and gravel within arms reach simply vanished from the disparity map.
+2. **Sky plane hallucination:** In over-exposed sky (where 16.8% of pixels exceed intensity 250), unconstrained matching assigned arbitrary disparities to featureless white pixels, which smoothing filters then diffused into solid walls.
+3. **Boundary halo corruption:** Applying standard bilateral filtering directly to raw floating-point disparity averaged zero-valued invalid sentinels with positive foreground disparities. This created a blurry sludge border around every rock.
+4. **Consistency check false rejections:** OpenCV `createRightMatcher` returns negative disparities scaled by 16. Inverting coordinates without handling the sign convention caused 95% of valid matches to be falsely rejected.
 
-Running stock OpenCV `StereoSGBM` (block size 3, 128 disparity levels, default penalties) on the rectified pairs exposed clear failure modes:
+Fixing these bugs required setting signed masks before filtering, enforcing an explicit disparity search range of 160 levels ($Z_{\min} \approx 0.56$ m), and stripping low-confidence regions before bilateral smoothing.
 
-![Default SGBM versus optimized SGBM with consistency diagnostic](assets/fig03_sgbm_comparison.png)
+## Does edge preservation help?
 
-- **The near-field cut off:** The nominal 128 disparity levels at $1280 \times 720$ could only represent objects down to $Z = B \cdot f / d_{\max} \approx 0.0974 \cdot 928 / 128 \approx 0.70$ m. Boulders and gravel within arms reach simply vanished from the disparity map.
-- **Sky hallucination:** In the featureless saturated sky, random sensor noise produced spurious correlation spikes, creating flying pixel debris at infinity.
-- **Foliage streaking:** Default 1D smoothness paths bled foreground depth into the background along horizontal raster lines.
+I evaluated seven filter candidates under identical frozen SGBM inputs across both Middlebury and Gunung:
 
-## What I changed
+![Filter comparison across Middlebury and Gunung](assets/fig02_filters.png)
 
-I modified the stereo matching pipeline one variable at a time, validating each choice on both the controlled Middlebury 2014 benchmark (where laser ground truth exists) and the unground-truthed Gunung field pairs:
+- **F0: Raw SGBM:** Ground baseline. Middlebury Bad-2.0: 29.09%, MAE: 1.27 px. Gunung median depth error: 0.055 m (5.5 cm) on 19.9% reference coverage.
+- **F1: Legacy Bilateral Filter:** The buggy implementation. Blurring zeros corrupted boundaries, inflating Middlebury Bad-2.0 to 34.22% and more than doubling Gunung depth MAE from 0.308 m to 0.764 m.
+- **F2: Validity-Aware Median Filter:** Restricting a 3x3 median blur strictly to valid pixels reduced Middlebury MAE to 1.24 px without boundary halo artifacts.
+- **F3: Guided Filter:** Using the grayscale left image as guidance smoothed textures but caused edge bleeding on high-contrast terrain boundaries (Bad-2.0: 37.98%).
+- **F4: Joint Bilateral Filter:** Color-guided bilateral smoothing achieved 31.60% Bad-2.0 on Middlebury and 0.401 m depth MAE on Gunung.
+- **F5: Standard Disparity WLS Filter:** Using `cv2.ximgproc.createDisparityWLSFilter` ($\lambda = 8000$, $\sigma = 1.5$) snapped boundaries to physical object contours. Valid coverage on Gunung almost doubled from 19.9% to 37.6% with a median depth error of only 0.102 m (10.2 cm).
+- **F6: Confidence-Aware Edge Preservation:** Rejecting low-confidence regions reduced Middlebury MAE to 0.79 px, but dropped outdoor coverage to 4.5% due to strict confidence penalties on weak natural textures.
 
-- **S1. Disparity Search Range ($d_{\max} = 160$ px):** Expanded disparity search from 128 to 160 px. This brought the minimum measurable distance down to 0.56 m, recovering near-field gravel and rock faces.
-- **S2. Matching Window Size ($blockSize = 7$):** Increasing the correlation window from 3 to 7 aggregated enough context to stabilize gravel matching without blurring structural building edges. Middlebury completeness-aware Bad-2.0 dropped from 43.9% to 37.3%.
-- **S3. Smoothness Regularization ($P_1 = 150, P_2 = 1200$):** Enforcing stronger second-order smoothness penalties suppressed noise in planar regions while allowing depth discontinuities. Middlebury Bad-2.0 dropped sharply to 27.9%, and MAE fell from 3.93 px to 1.57 px. On Gunung, Left-Right consistency jumped from 35.6% to 54.8%.
-- **S4. 3-Way Dynamic Programming (`MODE_SGBM_3WAY`):** Switching from full 8-path or 5-path aggregation to 3-way matching cut per-frame computation time from 1003 ms down to **264 ms** (a 3.8x speedup) with negligible error difference (+0.65% Bad-2.0).
-- **S5. Radiometric Normalization:** Testing histogram matching helped on exposure-shifted benchmark pairs (`ArtL`), but offered modest benefit on calibrated outdoor pairs already balanced by hardware auto-gain.
-- **S6. Post-Filtering:** Setting `uniquenessRatio = 10` and `speckleWindowSize = 100` stripped spurious correlation peaks in the sky, raising valid prediction coverage across terrains to 83.4%.
-- **S7. Edge-Aware Disparity WLS Filtering:** Applying a weighted least-squares filter (`cv2.ximgproc.createDisparityWLSFilter`, $\lambda = 8000$, $\sigma = 1.5$) guided by the rectified left RGB image snapped depth boundaries to physical object contours. Middlebury MAE reached its lowest value at **1.10 px** (down from 5.64 px).
+## Checking against real depth
 
-## Did optimization help?
+To validate the outdoor reconstructions against metric ground truth, I inspected the Intel RealSense D435i depth recordings (`depth_0000.npz`) accompanying each Gunung capture.
 
-The progression across stages shows consistent quantitative improvements across both benchmark ground truth and field consistency:
+![Error maps on Middlebury disparity and Gunung metric depth](assets/fig03_errors.png)
+
+Using SIFT feature correspondences between RealSense RGB ($640 \times 480$) and rectified stereo left ($1280 \times 720$), I solved for the rigid Euclidean extrinsics $(R, T)$ via PnP RANSAC. The physical translation converged to $T \approx [-1.5\text{ cm}, -3.8\text{ cm}, -1.5\text{ cm}]$, matching the camera mount on the rigid rig:
+
+- **puncakTinggi:** 106 inliers, median reprojection error 1.25 px. Over 140,638 jointly valid pixels ($Z < 4.0$ m), the median metric depth error was **0.083 m (8.3 cm)**, with 77.9% of predictions within $\delta < 1.25$.
+- **tanggaBiru:** 77 inliers, median reprojection error 0.73 px. Median depth error was **0.151 m (15.1 cm)**.
+- **tanggaKuning:** 32 inliers, median reprojection error 1.19 px. Median depth error was **0.135 m (13.5 cm)**.
+- **puncakWarung:** Registration was intentionally omitted. Scene features reside at distances beyond 15 meters, where RealSense active IR stereo cannot provide reliable depth. Following scientific protocol, target depth accuracy is not fabricated for this terrain.
+
+## What actually improved?
+
+Ablating matching parameters in sequence demonstrated clear, measurable gains:
 
 ![Sequential optimization evidence across Middlebury and Gunung](assets/fig04_optimization.png)
 
@@ -79,32 +81,25 @@ The progression across stages shows consistent quantitative improvements across 
 | **S6** | Speckle & Uniqueness Filtering | 28.31% | 3.20 px | **83.4%** | 40.6% | 243 ms |
 | **S7** | Edge-Aware WLS Filter | **27.87%** | **1.10 px** | 77.1% | 26.3% | 303 ms |
 
-Middlebury ground-truth Bad-2.0 error dropped from **43.9% down to 27.9%**, and Mean Absolute Error fell by **80.5%** (5.64 px to 1.10 px).
+Middlebury completeness-aware Bad-2.0 error dropped from **43.9% to 27.9%**, while MAE fell by **80.5%** (5.64 px to 1.10 px). 3-way matching cut runtime by **3.8x** (1003 ms to 264 ms) on standard CPU.
 
-On the Gunung outdoor pairs, Left-Right consistency peaked at 54.8% under Stage S3, while valid prediction coverage reached 77% to 83% under post-filtering and WLS.
+## Four terrains, different failure modes
 
-## How different were the terrains?
+Evaluating across all four terrains confirmed that outdoor reconstruction challenges vary significantly by geometry and lighting:
 
-Evaluating the configurations across all four terrains revealed that no single tuning fits every outdoor environment:
+![Cross-terrain performance and disparity maps](assets/fig05_terrains.png)
 
-![Cross-terrain performance summary](assets/fig05_terrain_results.png)
-
-| Terrain | Default Coverage | Optimized Coverage | Default Warp MAE | Optimized Warp MAE | Left-Right Consistency |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| `puncakTinggi` | 62.3% | 77.6% | 8.06 DN | 16.22 DN | 23.4% |
-| `puncakWarung` | 50.7% | 85.9% | 4.55 DN | 7.81 DN | 4.0% |
-| `tanggaBiru` | 57.2% | 71.7% | 8.78 DN | 16.68 DN | 43.9% |
-| `tanggaKuning` | 57.1% | 73.0% | 9.20 DN | 17.06 DN | 33.7% |
-
-- `tanggaBiru` and `tanggaKuning` achieved the highest Left-Right consistency (43.9% and 33.7%) because concrete stair steps provide strong high-frequency edges and planar surfaces.
-- `puncakWarung` achieved high coverage (85.9%) but low round-trip consistency (4.0%), reflecting severe shadowing and ambiguous depth behind the corrugated porch.
+1. **puncakTinggi (Ridge):** Strongest quantitative performance (median depth error 8.3 cm), but 16.8% saturated sky requires explicit masking to avoid flying planar artifacts.
+2. **puncakWarung (Stall):** Highest coverage (85.9%) but lowest round-trip consistency (4.0%), reflecting deep porch shadows and distant background (>15 m).
+3. **tanggaBiru (Blue Stairway):** High consistency (43.9%) and reliable railing reconstruction, but thin foliage causes micro-discontinuities.
+4. **tanggaKuning (Yellow Stairway):** Repeating metal railing bars create periodic correlation ambiguities, but step edges achieve 0.135 m median depth error.
 
 ## What I learned
 
-1. **Geometry beats matching:** Trying to tune stereo matching parameters on unrectified field imagery with a 28 px vertical correspondence displacement was futile. Correcting the epipolar geometry via physical calibration accounted for virtually all initial reconstruction gains.
-2. **Completeness-aware metrics prevent self-deception:** Classical matchers easily game accuracy by raising uniqueness thresholds to invalidate challenging pixels. Counting unpredicted valid pixels as matching failures is necessary to measure genuine progress.
-3. **The sky problem requires physical solutions:** When 17% of pixels are saturated at intensity 250, zero gradient exists for correlation matching. Optical polarizing filters or HDR multi-exposure capture are mandatory in high-altitude outdoor sunlight.
-4. **WLS filtering preserves edges but smooths untextured zones:** Disparity WLS filtering dramatically reduces MAE around physical contours (from 3.20 px to 1.10 px), but in featureless regions it can interpolate flat surfaces across weak depth boundaries.
+1. **Geometry matters before filtering:** Tuning matching parameters on unrectified imagery with 28 px vertical error was useless. Calibrated epipolar rectification accounted for almost all initial gains.
+2. **Smooth disparity is not necessarily accurate:** Filters that fill untextured sky or blur invalid sentinels look visually pleasing but destroy metric accuracy.
+3. **Missing predictions matter:** Completeness-aware metrics prevent matchers from gaming accuracy scores by rejecting difficult pixels.
+4. **Active IR reference sensors have strict range envelopes:** Intel RealSense D435i provides verified sub-decimeter ground truth up to 4 meters, but cannot evaluate distant outdoor mountain scenes beyond 10 meters.
 
 ## Reproduce
 
@@ -122,7 +117,7 @@ Runs calibration verification, rectified matching, and metrics on single test sc
 python reproduce.py --quick
 ```
 
-### Full Experiment
+### Full Benchmark Experiment
 
 Runs complete benchmark evaluation across all Middlebury scenes and all four Gunung terrains:
 
@@ -131,8 +126,9 @@ python reproduce.py --full
 ```
 
 Outputs:
-- `results/summary.csv`
+- `results/metrics.csv`
 - `results/best_params.json`
+- `results/validation.json`
 
 ### Regenerate Visuals
 
@@ -143,12 +139,13 @@ python visualize.py
 ```
 
 Outputs:
-- `assets/fig01_rectification.png` and `.pdf`
-- `assets/fig02_four_terrains.png` and `.pdf`
-- `assets/fig03_sgbm_comparison.png` and `.pdf`
+- `assets/fig01_cross_dataset.png` and `.pdf`
+- `assets/fig02_filters.png` and `.pdf`
+- `assets/fig03_errors.png` and `.pdf`
 - `assets/fig04_optimization.png` and `.pdf`
-- `assets/fig05_terrain_results.png` and `.pdf`
-- `assets/terrain_loop.gif`
+- `assets/fig05_terrains.png` and `.pdf`
+- `assets/fig06_edge_vs_accuracy.png` and `.pdf`
+- `assets/stereo_loop.gif`
 
 ### Run Unit Tests
 
@@ -158,7 +155,7 @@ python -m pytest -q
 
 ### Custom Data Paths
 
-If running on a different system, provide paths explicitly:
+Provide custom paths explicitly if running from another location:
 
 ```bash
 python reproduce.py --full --calib path/to/stereo_params.npz --gunung path/to/gunung --middlebury path/to/trainingQ

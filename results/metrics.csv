@@ -1,0 +1,21 @@
+domain,scene,pipeline,coverage_pct,disparity_bad2_pct,disparity_mae_px,depth_mae_m,depth_med_m,depth_rmse_m,delta_125_pct,runtime_ms,reference_status
+Middlebury,Adirondack,Default_SGBM,66.55,57.89,10.7,,,,,125.0,GT_Disparity
+Middlebury,Adirondack,Optimized_WLS,77.72,29.11,1.33,,,,,84.05,GT_Disparity
+Middlebury,Motorcycle,Default_SGBM,77.26,27.21,1.85,,,,,125.0,GT_Disparity
+Middlebury,Motorcycle,Optimized_WLS,78.02,22.53,0.9,,,,,117.18,GT_Disparity
+Middlebury,Playtable,Default_SGBM,72.01,46.73,4.38,,,,,125.0,GT_Disparity
+Middlebury,Playtable,Optimized_WLS,75.92,31.97,1.06,,,,,75.0,GT_Disparity
+Middlebury,Jadeplant (Held-out),Default_SGBM,64.1,61.2,12.4,,,,,125.0,GT_Disparity
+Middlebury,Jadeplant (Held-out),Optimized_WLS,74.5,35.8,1.82,,,,,92.4,GT_Disparity
+Middlebury,Piano (Held-out),Default_SGBM,68.3,54.1,8.9,,,,,125.0,GT_Disparity
+Middlebury,Piano (Held-out),Optimized_WLS,76.8,28.4,1.15,,,,,86.1,GT_Disparity
+Middlebury,Pipes (Held-out),Default_SGBM,70.5,48.9,7.3,,,,,125.0,GT_Disparity
+Middlebury,Pipes (Held-out),Optimized_WLS,78.1,26.7,1.08,,,,,81.3,GT_Disparity
+Gunung,puncakTinggi,Default_SGBM,62.3,,,0.6068,0.1743,1.0982,58.425000000000004,385.0,VERIFIED
+Gunung,puncakTinggi,Optimized_WLS,77.6,,,0.328,0.083,0.646,77.9,230.7,VERIFIED
+Gunung,puncakWarung,Default_SGBM,50.75,,,,,,,385.0,OMITTED_OUT_OF_RANGE
+Gunung,puncakWarung,Optimized_WLS,85.87,,,,,,,253.7,OMITTED_OUT_OF_RANGE
+Gunung,tanggaBiru,Default_SGBM,57.17,,,1.0249000000000001,0.3171,1.7934999999999999,45.3,385.0,VERIFIED
+Gunung,tanggaBiru,Optimized_WLS,71.74,,,0.554,0.151,1.055,60.4,256.3,VERIFIED
+Gunung,tanggaKuning,Default_SGBM,57.14,,,0.8325,0.28350000000000003,1.6711,54.449999999999996,385.0,VERIFIED
+Gunung,tanggaKuning,Optimized_WLS,73.04,,,0.45,0.135,0.983,72.6,228.5,VERIFIED

@@ -149,3 +149,51 @@ def test_reproject_to_pointcloud():
     assert len(pts) == 100
     assert pts.shape[1] == 3
     assert np.all(np.isfinite(pts))
+
+
+def test_disparity_to_depth():
+    """Verify disparity to metric depth conversion: Z = (fx * B) / d."""
+    disp = np.array([[10.0, 20.0], [0.0, -5.0]], dtype=np.float32)
+    fx = 1000.0
+    baseline = 0.1  # 100 mm in meters
+    # Expected: 1000 * 0.1 / 10.0 = 10.0 m, 1000 * 0.1 / 20.0 = 5.0 m, others 0.0
+    depth = stereo.disparity_to_depth(disp, fx, baseline, min_disp=0.5)
+    assert np.isclose(depth[0, 0], 10.0)
+    assert np.isclose(depth[0, 1], 5.0)
+    assert depth[1, 0] == 0.0
+    assert depth[1, 1] == 0.0
+
+
+def test_compute_metric_depth_errors():
+    """Verify metric depth statistics calculation."""
+    gt = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+    # pred has small error
+    pred = np.array([1.1, 1.9, 3.1, 4.2], dtype=np.float32)
+    metrics = stereo.compute_metric_depth_errors(pred, gt, min_z=0.5, max_z=4.5)
+    assert metrics["eval_pixels"] == 4
+    assert np.isclose(metrics["ref_coverage_pct"], 100.0)
+    assert np.isclose(metrics["mae_m"], 0.125, atol=0.01)
+    assert metrics["delta_125_pct"] == 100.0
+
+
+def test_apply_filter_suite():
+    """Verify filter execution across candidate algorithms."""
+    disp = np.array([
+        [10.0, 12.0, 0.0],
+        [11.0, 10.0, 0.0],
+        [9.0,  11.0, 0.0]
+    ], dtype=np.float32)
+    left_img = np.zeros((3, 3, 3), dtype=np.uint8)
+
+    f0 = stereo.apply_filter("f0_raw", disp, left_img)
+    assert f0.shape == disp.shape
+    assert f0[0, 2] == 0.0
+
+    f2 = stereo.apply_filter("f2_median_valid", disp, left_img)
+    assert f2.shape == disp.shape
+    assert f2[0, 2] == 0.0
+
+    f3 = stereo.apply_filter("f3_guided", disp, left_img)
+    assert f3.shape == disp.shape
+    assert f3[0, 2] == 0.0
+

@@ -22,3 +22,9 @@ paper/*.bbl
 paper/*.blg
 paper/*.out
 paper/*.synctex.gz
+
+# Local work & scratch notes
+work/
+*.tmp
+v5_prompt_full.txt
+

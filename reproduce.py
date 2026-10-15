@@ -104,6 +104,17 @@ def run_quick_verification(
     print(f"  Default SGBM:   Coverage = {cov_def:5.1f}% | Warp MAE = {warp_def:5.2f} DN | Time = {t_def:6.1f} ms")
     print(f"  Optimized+WLS:  Coverage = {cov_opt:5.1f}% | Warp MAE = {warp_opt:5.2f} DN | Time = {t_opt:6.1f} ms | LR Cons = {cons_opt:5.1f}%")
 
+    # Check for RealSense reference depth
+    rs_npz_path = gunung_dir / sample_terrain / "hardware" / "realsense" / "depth_0000.npz"
+    if rs_npz_path.exists():
+        manifest_p = Path("work/realsense_reference_manifest.csv")
+        if manifest_p.exists():
+            df_m = pd.read_csv(manifest_p)
+            pt_m = df_m[df_m["terrain"] == sample_terrain]
+            if len(pt_m) > 0 and pt_m.iloc[0]["status"] == "VERIFIED":
+                r_row = pt_m.iloc[0]
+                print(f"  RealSense Ref:  Depth MAE = {r_row['depth_mae_m']:.3f} m | Med = {r_row['depth_median_m']:.3f} m ({r_row['depth_median_m']*100:.1f} cm) | Delta<1.25 = {r_row['delta_125_pct']:.1f}%")
+
     # 3. Middlebury verification
     mid_p = Path(mid_root) / "Adirondack"
     if mid_p.exists():

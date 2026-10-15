@@ -1,0 +1,66 @@
+{
+  "project": "stereo-field-notes",
+  "title": "Playing with Stereo Matching",
+  "timestamp": "2026-10-15T22:45:00+07:00",
+  "environment": {
+    "os": "Windows-11-10.0.22631-SP0",
+    "python_version": "3.13.7",
+    "opencv_version": "5.0.0",
+    "numpy_version": "2.5.3",
+    "scipy_version": "1.16.2",
+    "pandas_version": "2.3.3"
+  },
+  "camera_calibration": {
+    "baseline_mm": 97.497,
+    "focal_length_px": 964.684,
+    "image_size": [
+      1280,
+      720
+    ],
+    "calib_path": "stereo_params_advanced.npz"
+  },
+  "realsense_reference": {
+    "sensor": "Intel RealSense D435i",
+    "native_depth_resolution": [
+      640,
+      480
+    ],
+    "depth_unit": "millimeter (uint16)",
+    "registration_method": "SIFT + PnP RANSAC (2D-3D)",
+    "reprojection_residuals_median_px": {
+      "puncakTinggi": 1.25,
+      "tanggaBiru": 0.73,
+      "tanggaKuning": 1.19,
+      "puncakWarung": "omitted_distance_exceeds_15m"
+    },
+    "status": {
+      "puncakTinggi": "VERIFIED",
+      "tanggaBiru": "VERIFIED",
+      "tanggaKuning": "VERIFIED",
+      "puncakWarung": "OMITTED_OUT_OF_RANGE"
+    }
+  },
+  "key_measured_results": {
+    "middlebury_bad2_reduction_pct": 49.7,
+    "middlebury_mae_reduction_pct": 87.6,
+    "middlebury_opt_bad2_mean": 27.87,
+    "middlebury_opt_mae_px_mean": 1.1,
+    "gunung_near_field_median_error_m": {
+      "puncakTinggi": 0.083,
+      "tanggaKuning": 0.135,
+      "tanggaBiru": 0.151
+    },
+    "gunung_puncakTinggi_delta125_pct": 77.9,
+    "gunung_puncakTinggi_eval_pixels": 140638
+  },
+  "filter_comparison_summary": {
+    "f0_raw_middlebury_bad2": 29.09,
+    "f1_legacy_bilateral_middlebury_bad2": 34.22,
+    "f2_median_valid_middlebury_bad2": 29.05,
+    "f5_wls_middlebury_bad2": 29.81,
+    "f5_wls_middlebury_coverage_pct": 77.19,
+    "f1_legacy_bilateral_gunung_mae_m": 0.764,
+    "f5_wls_gunung_mae_m": 0.311,
+    "f5_wls_gunung_median_m": 0.102
+  }
+}
