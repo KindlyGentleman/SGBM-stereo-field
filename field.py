@@ -153,9 +153,13 @@ def evaluate_middlebury_scene(
     else:
         disp_pred, _ = stereo.compute_disparity_sgbm(in0, in1, matcher)
 
-    # Upscale back to native resolution if scaled
+    # Upscale back to native resolution if scaled (preserving negative sentinels)
     if scale != 1.0:
-        disp_pred = cv2.resize(disp_pred, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
+        valid_m = disp_pred >= 0.0
+        d_fill = np.where(valid_m, disp_pred, 0.0).astype(np.float32)
+        d_up = cv2.resize(d_fill, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
+        m_up = cv2.resize(valid_m.astype(np.uint8), (w_orig, h_orig), interpolation=cv2.INTER_NEAREST) > 0
+        disp_pred = np.where(m_up, d_up, -1.0)
 
     runtime_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -186,6 +190,7 @@ def evaluate_middlebury_scene(
 
     return {
         "scene": scene_dir.name,
+        "scale": scale,
         "width": w_orig,
         "height": h_orig,
         "ndisp": ndisp,
@@ -394,10 +399,11 @@ def compute_metric_depth_errors(
     if n_ref == 0:
         return {
             "eval_pixels": 0,
+            "total_ref_pixels": 0,
             "ref_coverage_pct": 0.0,
-            "mae_m": float("nan"),
-            "median_m": float("nan"),
-            "rmse_m": float("nan"),
+            "depth_mae_m": float("nan"),
+            "depth_median_m": float("nan"),
+            "depth_rmse_m": float("nan"),
             "delta_125_pct": float("nan")
         }
 
@@ -408,10 +414,11 @@ def compute_metric_depth_errors(
     if n_joint == 0:
         return {
             "eval_pixels": 0,
+            "total_ref_pixels": int(n_ref),
             "ref_coverage_pct": 0.0,
-            "mae_m": float("nan"),
-            "median_m": float("nan"),
-            "rmse_m": float("nan"),
+            "depth_mae_m": float("nan"),
+            "depth_median_m": float("nan"),
+            "depth_rmse_m": float("nan"),
             "delta_125_pct": float("nan")
         }
 
@@ -426,6 +433,7 @@ def compute_metric_depth_errors(
 
     return {
         "eval_pixels": int(n_joint),
+        "total_ref_pixels": int(n_ref),
         "ref_coverage_pct": cov_pct,
         "depth_mae_m": mae,
         "depth_median_m": med,

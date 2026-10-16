@@ -115,3 +115,24 @@ def test_patch_candidate_sweep():
     valid_probs = sweep["cnn_probs"][np.isfinite(sweep["cnn_probs"])]
     assert np.all(valid_probs >= 0.0)
     assert np.all(valid_probs <= 1.0)
+
+
+def test_paired_comparison_and_mcnemar():
+    """Verify hand-calculated paired McNemar contingency table and exact p-value."""
+    y_true = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+    preds_a = np.array([1, 1, 0, 0, 0, 0, 1, 1])
+    preds_b = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+
+    res = cnn.compute_paired_comparison(y_true, preds_a, preds_b, n_bootstraps=500, rng_seed=42)
+
+    assert res["n00"] == 4
+    assert res["n01"] == 0
+    assert res["n10"] == 4
+    assert res["n11"] == 0
+    assert res["n_discordant"] == 4
+    assert np.isclose(res["acc_a"], 50.0)
+    assert np.isclose(res["acc_b"], 100.0)
+    assert np.isclose(res["diff"], 50.0)
+    assert np.isclose(res["mcnemar_exact_pvalue"], 0.125)
+    assert res["bootstrap_ci_95"][0] <= res["bootstrap_ci_95"][1]
+

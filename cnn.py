@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Tuple, List, Optional, Any
 import numpy as np
 import pandas as pd
+from scipy import stats
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -228,7 +229,8 @@ def evaluate_classical_baseline(
         "precision": prec,
         "recall": rec,
         "f1": f1,
-        "confusion_matrix": {"TP": tp, "FP": fp, "FN": fn, "TN": tn}
+        "confusion_matrix": {"TP": tp, "FP": fp, "FN": fn, "TN": tn},
+        "predictions": preds
     }
 
 
@@ -352,6 +354,7 @@ def evaluate_cnn_test(
     t0 = time.perf_counter()
     with torch.no_grad():
         logits = model(tx_test)
+        probs = torch.softmax(logits, dim=1)[:, 1].numpy()
         preds = torch.argmax(logits, dim=1).numpy()
     inf_time_s = time.perf_counter() - t0
 
@@ -373,9 +376,76 @@ def evaluate_cnn_test(
         "confusion_matrix": {"TP": tp, "FP": fp, "FN": fn, "TN": tn},
         "samples_evaluated": len(y_test),
         "inference_time_s": inf_time_s,
-        "inference_ms_per_patch": (inf_time_s / len(y_test)) * 1000.0
+        "inference_ms_per_patch": (inf_time_s / len(y_test)) * 1000.0,
+        "predictions": preds,
+        "probs": probs
     }
     return metrics, inf_time_s
+
+
+def compute_paired_comparison(
+    y_true: np.ndarray,
+    preds_a: np.ndarray,
+    preds_b: np.ndarray,
+    n_bootstraps: int = 1000,
+    rng_seed: int = 42
+) -> Dict[str, Any]:
+    """Compute paired McNemar contingency table, exact p-value, and bootstrap 95% CI.
+
+    Tests whether the accuracy difference between model B (e.g. CNN) and model A (e.g. MAD)
+    is statistically significant on the paired sample set.
+    """
+    correct_a = (preds_a == y_true)
+    correct_b = (preds_b == y_true)
+
+    # Contingency table
+    # n00: both correct
+    # n01: A correct, B incorrect (discordant)
+    # n10: B correct, A incorrect (discordant)
+    # n11: both incorrect
+    n00 = int(np.sum(correct_a & correct_b))
+    n01 = int(np.sum(correct_a & (~correct_b)))
+    n10 = int(np.sum((~correct_a) & correct_b))
+    n11 = int(np.sum((~correct_a) & (~correct_b)))
+
+    acc_a = float(np.mean(correct_a) * 100.0)
+    acc_b = float(np.mean(correct_b) * 100.0)
+    diff = acc_b - acc_a
+
+    # Exact two-sided binomial test on discordant pairs (McNemar's exact test)
+    n_discordant = n01 + n10
+    if n_discordant > 0:
+        binom_res = stats.binomtest(n10, n_discordant, p=0.5, alternative="two-sided")
+        p_value = float(binom_res.pvalue)
+    else:
+        p_value = 1.0
+
+    # Bootstrap 95% confidence interval for (acc_b - acc_a)
+    rng = np.random.default_rng(rng_seed)
+    n = len(y_true)
+    indices = np.arange(n)
+    boot_diffs = []
+    for _ in range(n_bootstraps):
+        boot_idx = rng.choice(indices, size=n, replace=True)
+        b_acc_a = np.mean(preds_a[boot_idx] == y_true[boot_idx]) * 100.0
+        b_acc_b = np.mean(preds_b[boot_idx] == y_true[boot_idx]) * 100.0
+        boot_diffs.append(b_acc_b - b_acc_a)
+
+    ci_lower = float(np.percentile(boot_diffs, 2.5))
+    ci_upper = float(np.percentile(boot_diffs, 97.5))
+
+    return {
+        "acc_a": acc_a,
+        "acc_b": acc_b,
+        "diff": diff,
+        "n00": n00,
+        "n01": n01,
+        "n10": n10,
+        "n11": n11,
+        "n_discordant": n_discordant,
+        "mcnemar_exact_pvalue": p_value,
+        "bootstrap_ci_95": [ci_lower, ci_upper]
+    }
 
 
 def sweep_patch_candidate_disparities(
@@ -432,13 +502,146 @@ def sweep_patch_candidate_disparities(
     }
 
 
+def run_cnn_multiseed_validation(
+    seeds: Optional[List[int]] = None,
+    epochs: int = 15,
+    num_threads: int = 2,
+    results_dir: str = "results",
+    save_json: bool = True
+) -> Dict[str, Any]:
+    """Train and evaluate TinyStereoNet across multiple random seeds to measure statistical uncertainty."""
+    if seeds is None:
+        seeds = [42, 101, 202, 303, 404]
+
+    out_dir = Path(results_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build standard held-out split
+    (x_train_raw, y_train), (x_val_raw, y_val), (x_test_raw, y_test) = build_split_datasets()
+    x_train = normalize_patches(x_train_raw)
+    x_val = normalize_patches(x_val_raw)
+    x_test = normalize_patches(x_test_raw)
+
+    opt_thresh = find_optimal_classical_threshold(x_val, y_val)
+    classical_test = evaluate_classical_baseline(x_test, y_test, opt_thresh)
+
+    seed_records = []
+    best_model_overall = None
+    best_acc_overall = -1.0
+    primary_summary = None
+
+    print(f"Running multi-seed validation across {len(seeds)} seeds: {seeds}...")
+
+    for seed in seeds:
+        model, history_df, train_time_s = train_cnn(
+            x_train, y_train, x_val, y_val,
+            epochs=epochs, lr=0.008, seed=seed, num_threads=num_threads
+        )
+        cnn_metrics, inf_time_s = evaluate_cnn_test(model, x_test, y_test)
+        paired = compute_paired_comparison(
+            y_test,
+            classical_test["predictions"],
+            cnn_metrics["predictions"],
+            rng_seed=seed
+        )
+
+        rec = {
+            "seed": seed,
+            "train_time_s": train_time_s,
+            "cnn_accuracy": cnn_metrics["accuracy"],
+            "cnn_precision": cnn_metrics["precision"],
+            "cnn_recall": cnn_metrics["recall"],
+            "cnn_f1": cnn_metrics["f1"],
+            "mad_accuracy": classical_test["accuracy"],
+            "acc_diff": paired["diff"],
+            "mcnemar_pvalue": paired["mcnemar_exact_pvalue"],
+            "ci_95_lower": paired["bootstrap_ci_95"][0],
+            "ci_95_upper": paired["bootstrap_ci_95"][1],
+            "n_discordant": paired["n_discordant"]
+        }
+        seed_records.append(rec)
+        print(f"  Seed {seed:3d}: CNN Acc={cnn_metrics['accuracy']:.2f}% | MAD Acc={classical_test['accuracy']:.2f}% | Diff={paired['diff']:+.2f}% | McNemar p={paired['mcnemar_exact_pvalue']:.4f}")
+
+        if cnn_metrics["accuracy"] > best_acc_overall:
+            best_acc_overall = cnn_metrics["accuracy"]
+            best_model_overall = model
+
+        if seed == seeds[0]:
+            primary_summary = {
+                "model_parameters": sum(p.numel() for p in model.parameters()),
+                "epochs": epochs,
+                "cpu_threads": num_threads,
+                "training_time_seconds": train_time_s,
+                "optimal_classical_threshold": opt_thresh,
+                "classical_baseline": {k: v for k, v in classical_test.items() if k != "predictions"},
+                "tiny_cnn": {k: v for k, v in cnn_metrics.items() if k not in ["predictions", "probs"]},
+                "paired_comparison": paired,
+                "history_df": history_df,
+                "test_preds": cnn_metrics["predictions"],
+                "test_probs": cnn_metrics["probs"],
+                "mad_preds": classical_test["predictions"]
+            }
+
+    df_seeds = pd.DataFrame(seed_records)
+
+    multi_seed_stats = {
+        "seeds": seeds,
+        "cnn_accuracy_mean": float(df_seeds["cnn_accuracy"].mean()),
+        "cnn_accuracy_std": float(df_seeds["cnn_accuracy"].std()),
+        "mad_accuracy": float(classical_test["accuracy"]),
+        "acc_diff_mean": float(df_seeds["acc_diff"].mean()),
+        "acc_diff_std": float(df_seeds["acc_diff"].std()),
+        "mcnemar_pvalues": [float(p) for p in df_seeds["mcnemar_pvalue"]],
+        "median_mcnemar_pvalue": float(df_seeds["mcnemar_pvalue"].median()),
+        "seed_runs": seed_records
+    }
+
+    if primary_summary is not None:
+        primary_summary["multi_seed_analysis"] = multi_seed_stats
+
+        # Save training history of primary seed
+        history_csv = out_dir / "cnn_history.csv"
+        primary_summary["history_df"].to_csv(history_csv, index=False)
+
+        # Save FULL test set (all 246 samples) and predictions
+        np.savez(
+            str(out_dir / "cnn_test_samples.npz"),
+            x_test=x_test,
+            y_test=y_test,
+            cnn_preds=primary_summary["test_preds"],
+            cnn_probs=primary_summary["test_probs"],
+            mad_preds=primary_summary["mad_preds"]
+        )
+
+        if best_model_overall is not None:
+            torch.save(best_model_overall.state_dict(), str(out_dir / "tiny_cnn.pt"))
+
+        if save_json:
+            metrics_json = out_dir / "cnn_metrics.json"
+            clean_json = {
+                "model_parameters": primary_summary["model_parameters"],
+                "epochs": primary_summary["epochs"],
+                "cpu_threads": primary_summary["cpu_threads"],
+                "training_time_seconds": primary_summary["training_time_seconds"],
+                "optimal_classical_threshold": primary_summary["optimal_classical_threshold"],
+                "classical_baseline": primary_summary["classical_baseline"],
+                "tiny_cnn": primary_summary["tiny_cnn"],
+                "paired_comparison": primary_summary["paired_comparison"],
+                "multi_seed_analysis": multi_seed_stats
+            }
+            with open(metrics_json, "w", encoding="utf-8") as f:
+                json.dump(clean_json, f, indent=2)
+
+    return multi_seed_stats
+
+
 def run_cnn_experiment(
     epochs: int = 15,
     num_threads: int = 2,
     results_dir: str = "results",
     save_json: bool = True
 ) -> Dict[str, Any]:
-    """Execute complete CNN educational patch correspondence experiment."""
+    """Execute complete CNN educational patch correspondence experiment with multi-seed validation."""
     out_dir = Path(results_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -447,76 +650,24 @@ def run_cnn_experiment(
     print("=" * 72)
     print("Building independent datasets (Train: 1000, Val: 200, Test: 250)...")
 
-    (x_train_raw, y_train), (x_val_raw, y_val), (x_test_raw, y_test) = build_split_datasets()
-
-    # Apply per-patch zero-mean unit-variance normalization
-    x_train = normalize_patches(x_train_raw)
-    x_val = normalize_patches(x_val_raw)
-    x_test = normalize_patches(x_test_raw)
-
-    print(f"  Training samples:   {len(y_train)} (Pos: {np.sum(y_train == 1)}, Neg: {np.sum(y_train == 0)})")
-    print(f"  Validation samples: {len(y_val)} (Pos: {np.sum(y_val == 1)}, Neg: {np.sum(y_val == 0)})")
-    print(f"  Test samples:       {len(y_test)} (Pos: {np.sum(y_test == 1)}, Neg: {np.sum(y_test == 0)})")
-
-    # 1. Classical baseline selection on train/val
-    print("\n[Step 1] Selecting classical MAD threshold on validation set...")
-    opt_thresh = find_optimal_classical_threshold(x_val, y_val)
-    val_baseline = evaluate_classical_baseline(x_val, y_val, opt_thresh)
-    print(f"  Optimal MAD threshold: {opt_thresh:.3f} | Val Accuracy: {val_baseline['accuracy']:.1f}%")
-
-    # 2. Train tiny CNN
-    print(f"\n[Step 2] Training TinyStereoNet ({epochs} epochs, {num_threads} CPU threads)...")
-    model, history_df, train_time_s = train_cnn(
-        x_train, y_train, x_val, y_val,
-        epochs=epochs, lr=0.008, num_threads=num_threads
-    )
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Model parameter count: {n_params} parameters")
-    print(f"  CPU Training time:     {train_time_s:.2f} s ({train_time_s / epochs * 1000.0:.1f} ms/epoch)")
-    print(f"  Final Val Accuracy:    {history_df['val_acc'].iloc[-1]:.1f}% (Best: {history_df['val_acc'].max():.1f}%)")
-
-    # 3. Evaluate both on untouched held-out test data
-    print("\n[Step 3] Evaluating on untouched held-out test set...")
-    cnn_test_metrics, inf_time_s = evaluate_cnn_test(model, x_test, y_test)
-    classical_test_metrics = evaluate_classical_baseline(x_test, y_test, opt_thresh)
-
-    print("-" * 72)
-    print(f"{'Method':<20} {'Accuracy':<12} {'Precision':<12} {'Recall':<12} {'F1 Score':<12}")
-    print("-" * 72)
-    print(f"{'Classical (MAD)':<20} {classical_test_metrics['accuracy']:<12.1f} {classical_test_metrics['precision']:<12.1f} {classical_test_metrics['recall']:<12.1f} {classical_test_metrics['f1']:<12.1f}")
-    print(f"{'Tiny CNN (Learned)':<20} {cnn_test_metrics['accuracy']:<12.1f} {cnn_test_metrics['precision']:<12.1f} {cnn_test_metrics['recall']:<12.1f} {cnn_test_metrics['f1']:<12.1f}")
-    print("-" * 72)
-    print(f"  CNN Test Confusion Matrix:  TP={cnn_test_metrics['confusion_matrix']['TP']}, FP={cnn_test_metrics['confusion_matrix']['FP']}, FN={cnn_test_metrics['confusion_matrix']['FN']}, TN={cnn_test_metrics['confusion_matrix']['TN']}")
-    print(f"  CNN CPU Inference latency:  {cnn_test_metrics['inference_ms_per_patch']:.3f} ms/patch")
-
-    # 4. Save results
-    history_csv = out_dir / "cnn_history.csv"
-    history_df.to_csv(history_csv, index=False)
-
-    summary = {
-        "model_parameters": n_params,
-        "epochs": epochs,
-        "cpu_threads": num_threads,
-        "training_time_seconds": train_time_s,
-        "optimal_classical_threshold": opt_thresh,
-        "classical_baseline": classical_test_metrics,
-        "tiny_cnn": cnn_test_metrics
-    }
-    if save_json:
-        metrics_json = out_dir / "cnn_metrics.json"
-        with open(metrics_json, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
-
-    # Save model weights and sample test patches for visualization script
-    torch.save(model.state_dict(), str(out_dir / "tiny_cnn.pt"))
-    np.savez(
-        str(out_dir / "cnn_test_samples.npz"),
-        x_test=x_test[:20],
-        y_test=y_test[:20]
+    multiseed_results = run_cnn_multiseed_validation(
+        seeds=[42, 101, 202, 303, 404],
+        epochs=epochs,
+        num_threads=num_threads,
+        results_dir=results_dir,
+        save_json=save_json
     )
 
-    print(f"\nSaved training history to: {history_csv}")
-    print(f"Saved test metrics to:     {metrics_json}")
+    metrics_json = out_dir / "cnn_metrics.json"
+    with open(metrics_json, "r", encoding="utf-8") as f:
+        summary = json.load(f)
+
+    print("-" * 72)
+    print(f"Classical (MAD) Accuracy: {summary['classical_baseline']['accuracy']:.2f}%")
+    print(f"Tiny CNN Accuracy (Seed 42): {summary['tiny_cnn']['accuracy']:.2f}%")
+    print(f"Tiny CNN Multi-Seed Mean: {multiseed_results['cnn_accuracy_mean']:.2f}% +/- {multiseed_results['cnn_accuracy_std']:.2f}%")
+    print(f"Paired Difference Mean:   {multiseed_results['acc_diff_mean']:+.2f}% +/- {multiseed_results['acc_diff_std']:.2f}%")
+    print(f"Median McNemar p-value:   {multiseed_results['median_mcnemar_pvalue']:.4f}")
     print("=" * 72)
 
     return summary

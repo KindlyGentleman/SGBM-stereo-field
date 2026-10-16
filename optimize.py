@@ -43,26 +43,29 @@ def apply_filter(
     - 'wls': Weighted Least Squares disparity filter using left-right consistency.
     - 'confidence_edge': WLS filter with confidence map masking for edge preservation.
     """
-    disp_clean = disp_raw.copy()
-    disp_clean[disp_clean <= 0] = 0.0
     name = filter_name.lower().strip()
+    valid_mask = (disp_raw >= 0.0) & np.isfinite(disp_raw)
 
     if name in ["raw", "none", "f0_raw"]:
-        return disp_clean
+        return disp_raw.copy()
 
     elif name in ["median_valid", "f2_median", "median"]:
-        med = cv2.medianBlur(disp_clean, 3)
-        return np.where(disp_clean > 0, med, 0.0)
+        # Apply 3x3 median blur over valid pixels only, preserving invalid sentinels
+        disp_zero_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
+        med = cv2.medianBlur(disp_zero_filled, 3)
+        return np.where(valid_mask, med, -1.0)
 
     elif name in ["guided", "f3_guided"]:
         gray = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY) if left_img.ndim == 3 else left_img
-        gf = cv2.ximgproc.guidedFilter(guide=gray, src=disp_clean, radius=5, eps=1.0)
-        return np.where(disp_clean > 0, gf, 0.0)
+        disp_zero_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
+        gf = cv2.ximgproc.guidedFilter(guide=gray, src=disp_zero_filled, radius=5, eps=1.0)
+        return np.where(valid_mask, gf, -1.0)
 
     elif name in ["joint_bilateral", "f4_joint_bilateral"]:
         img_f = left_img.astype(np.float32) / 255.0
-        jb = cv2.ximgproc.jointBilateralFilter(joint=img_f, src=disp_clean, d=5, sigmaColor=0.1, sigmaSpace=5)
-        return np.where(disp_clean > 0, jb, 0.0)
+        disp_zero_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
+        jb = cv2.ximgproc.jointBilateralFilter(joint=img_f, src=disp_zero_filled, d=5, sigmaColor=0.1, sigmaSpace=5)
+        return np.where(valid_mask, jb, -1.0)
 
     elif name in ["wls", "f5_wls"]:
         if matcher is None or disp_r_raw is None:
@@ -70,10 +73,24 @@ def apply_filter(
         wls = cv2.ximgproc.createDisparityWLSFilter(matcher)
         wls.setLambda(8000.0)
         wls.setSigmaColor(1.5)
-        d_l_16 = (disp_raw * 16.0).astype(np.int16)
-        d_r_16 = (disp_r_raw * 16.0).astype(np.int16)
-        f_disp = wls.filter(d_l_16, left_img, None, d_r_16).astype(np.float32) / 16.0
-        f_disp[f_disp <= 0] = 0.0
+
+        # Convert to 16-bit signed integer for OpenCV WLS, preserving right disparity signs
+        if disp_raw.dtype == np.int16:
+            d_l_16 = disp_raw
+        else:
+            d_l_16 = np.round(disp_raw * 16.0).astype(np.int16)
+
+        if disp_r_raw.dtype == np.int16:
+            d_r_16 = disp_r_raw
+        else:
+            d_r_16 = np.round(disp_r_raw * 16.0).astype(np.int16)
+
+        f_disp_raw = wls.filter(d_l_16, left_img, None, d_r_16)
+        f_disp = f_disp_raw.astype(np.float32) / 16.0
+
+        min_disp = matcher.getMinDisparity()
+        invalid_sentinel_raw = (min_disp - 1) * 16
+        f_disp[f_disp_raw <= invalid_sentinel_raw] = -1.0
         return f_disp
 
     elif name in ["confidence_edge", "f6_confidence_edge"]:
@@ -82,14 +99,29 @@ def apply_filter(
         wls = cv2.ximgproc.createDisparityWLSFilter(matcher)
         wls.setLambda(8000.0)
         wls.setSigmaColor(1.5)
-        d_l_16 = (disp_raw * 16.0).astype(np.int16)
-        d_r_16 = (disp_r_raw * 16.0).astype(np.int16)
-        f_disp = wls.filter(d_l_16, left_img, None, d_r_16).astype(np.float32) / 16.0
+
+        if disp_raw.dtype == np.int16:
+            d_l_16 = disp_raw
+        else:
+            d_l_16 = np.round(disp_raw * 16.0).astype(np.int16)
+
+        if disp_r_raw.dtype == np.int16:
+            d_r_16 = disp_r_raw
+        else:
+            d_r_16 = np.round(disp_r_raw * 16.0).astype(np.int16)
+
+        f_disp_raw = wls.filter(d_l_16, left_img, None, d_r_16)
         conf = wls.getConfidenceMap()
-        f_disp[f_disp <= 0] = 0.0
+        f_disp = f_disp_raw.astype(np.float32) / 16.0
+
+        min_disp = matcher.getMinDisparity()
+        invalid_sentinel_raw = (min_disp - 1) * 16
+        f_disp[f_disp_raw <= invalid_sentinel_raw] = -1.0
+
         max_conf = np.max(conf) if conf.size > 0 else 1.0
         if max_conf > 0:
-            f_disp[conf < 0.2 * max_conf] = 0.0
+            # Mask low confidence pixels with invalid sentinel (-1.0), not 0.0
+            f_disp[conf < 0.2 * max_conf] = -1.0
         return f_disp
 
     else:
@@ -114,7 +146,7 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
         "filter": "median_valid",
-        "target_fps": 30
+        "description": "0.5x scale, single-pass SGBM + validity-aware median filter for low-latency robotics"
     },
     "BALANCED": {
         "scale": 0.5,
@@ -127,11 +159,9 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "speckleWindowSize": 100,
         "speckleRange": 2,
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
-        "use_wls": True,
-        "wls_lambda": 4000.0,
-        "wls_sigma": 1.2,
-        "filter": "wls",
-        "target_fps": 15
+        "use_wls": False,
+        "filter": "median_valid",
+        "description": "0.5x scale, single-pass SGBM + validity-aware median filter (Pareto-superior to WLS on CPU)"
     },
     "QUALITY": {
         "scale": 1.0,
@@ -144,11 +174,9 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "speckleWindowSize": 100,
         "speckleRange": 2,
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
-        "use_wls": True,
-        "wls_lambda": 8000.0,
-        "wls_sigma": 1.5,
-        "filter": "wls",
-        "target_fps": 3
+        "use_wls": False,
+        "filter": "median_valid",
+        "description": "1.0x native scale, 160 disparities, block size 7 + validity-aware median filter"
     }
 }
 
@@ -162,9 +190,9 @@ def run_stereo_pipeline(
     """Execute complete stereo pipeline with downscaling, matching, and filtering.
 
     Presets:
-    - FAST: 0.5x scale, single-pass SGBM + validity-aware median, target 30 FPS.
-    - BALANCED: 0.5x scale, SGBM + multiscale WLS, target 15 FPS.
-    - QUALITY: 1.0x native resolution, full-range SGBM + full WLS, target 3 FPS.
+    - FAST: 0.5x scale, single-pass SGBM + validity-aware median.
+    - BALANCED: 0.5x scale, SGBM + validity-aware median filter.
+    - QUALITY: 1.0x native resolution, full-range SGBM + validity-aware median.
     """
     key = preset.upper().strip()
     if key not in PIPELINE_PRESETS:
@@ -190,6 +218,10 @@ def run_stereo_pipeline(
         l_in, r_in = left_img, right_img
     t_scale = (time.perf_counter() - t_scale0) * 1000.0
 
+    # Ensure grayscale inputs for OpenCV SGBM compute
+    gray_l = cv2.cvtColor(l_in, cv2.COLOR_BGR2GRAY) if l_in.ndim == 3 else l_in
+    gray_r = cv2.cvtColor(r_in, cv2.COLOR_BGR2GRAY) if r_in.ndim == 3 else r_in
+
     w_in = l_in.shape[1]
     max_possible_disp = max(16, ((w_in - 1) // 16) * 16)
     num_disp = min(cfg["numDisparities"], max_possible_disp)
@@ -206,8 +238,8 @@ def run_stereo_pipeline(
     t_match0 = time.perf_counter()
     if cfg.get("use_wls", False):
         r_matcher = cv2.ximgproc.createRightMatcher(matcher)
-        dl = matcher.compute(l_in, r_in)
-        dr = r_matcher.compute(r_in, l_in)
+        dl = matcher.compute(gray_l, gray_r)
+        dr = r_matcher.compute(gray_r, gray_l)
         t_match = (time.perf_counter() - t_match0) * 1000.0
 
         # Stage 3: WLS filter
@@ -215,25 +247,37 @@ def run_stereo_pipeline(
         wls = cv2.ximgproc.createDisparityWLSFilter(matcher)
         wls.setLambda(cfg.get("wls_lambda", 8000.0))
         wls.setSigmaColor(cfg.get("wls_sigma", 1.5))
-        d_filt = wls.filter(dl, l_in, None, dr).astype(np.float32) / 16.0
+        d_filt = wls.filter(dl, gray_l, None, dr).astype(np.float32) / 16.0
+        valid_filt = d_filt >= 0.0
+        d_filt = np.where(valid_filt, d_filt, -1.0)
         t_filt = (time.perf_counter() - t_filt0) * 1000.0
     else:
-        dl = matcher.compute(l_in, r_in)
+        dl = matcher.compute(gray_l, gray_r)
         t_match = (time.perf_counter() - t_match0) * 1000.0
 
         t_filt0 = time.perf_counter()
-        d_raw = dl.astype(np.float32) / 16.0
-        d_clean = np.where(d_raw > 0, d_raw, 0.0)
-        med = cv2.medianBlur(d_clean, 3)
-        d_filt = np.where(d_clean > 0, med, 0.0)
+        raw_valid = dl > (matcher.getMinDisparity() - 1) * 16
+        d_raw = np.where(raw_valid, dl.astype(np.float32) / 16.0, -1.0)
+
+        filt_name = cfg.get("filter", "median_valid")
+        if filt_name == "median_valid":
+            disp_zero_filled = np.where(raw_valid, d_raw, 0.0).astype(np.float32)
+            med = cv2.medianBlur(disp_zero_filled, 3)
+            d_filt = np.where(raw_valid, med, -1.0)
+        elif filt_name in ["raw", "none"]:
+            d_filt = d_raw
+        else:
+            d_filt = apply_filter(filt_name, d_raw, l_in)
         t_filt = (time.perf_counter() - t_filt0) * 1000.0
 
-    d_filt[d_filt <= 0] = 0.0
-
-    # Stage 4: Upscale disparity
+    # Stage 4: Upscale disparity if downscaled
     t_up0 = time.perf_counter()
     if scale != 1.0:
-        d_out = cv2.resize(d_filt, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
+        valid_mask_in = (d_filt >= 0.0)
+        disp_filled = np.where(valid_mask_in, d_filt, 0.0).astype(np.float32)
+        d_up = cv2.resize(disp_filled, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
+        mask_up = cv2.resize(valid_mask_in.astype(np.uint8), (w_orig, h_orig), interpolation=cv2.INTER_NEAREST) > 0
+        d_out = np.where(mask_up, d_up, -1.0)
     else:
         d_out = d_filt
     t_up = (time.perf_counter() - t_up0) * 1000.0
@@ -282,75 +326,85 @@ def run_parameter_and_filter_search(
         disp_gt = stereo.load_pfm(str(gt_path))
         mask_eval = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) == 255
 
+    # Enforce consistent grayscale inputs for CPU matching
+    gray0 = cv2.cvtColor(im0, cv2.COLOR_BGR2GRAY) if im0.ndim == 3 else im0
+    gray1 = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY) if im1.ndim == 3 else im1
+
     ndisp = 160
     b_size = 7
     matcher = stereo.create_sgbm_matcher(num_disparities=ndisp, block_size=b_size)
     r_matcher = cv2.ximgproc.createRightMatcher(matcher)
 
-    # Compute raw left and right disparities
+    # Time single-direction (left) matching
     t0 = time.perf_counter()
-    dl_raw = matcher.compute(im0, im1)
-    dr_raw = r_matcher.compute(im1, im0)
-    match_ms = (time.perf_counter() - t0) * 1000.0
+    dl_raw = matcher.compute(gray0, gray1)
+    match_l_ms = (time.perf_counter() - t0) * 1000.0
 
+    # Time reverse-direction (right) matching
+    t1 = time.perf_counter()
+    dr_raw = r_matcher.compute(gray1, gray0)
+    match_r_ms = (time.perf_counter() - t1) * 1000.0
+
+    # Converted floating-point disparities (preserving negative sentinels)
     disp_l = dl_raw.astype(np.float32) / 16.0
-    disp_l[disp_l <= 0] = 0.0
-    disp_r = dr_raw.astype(np.float32) / 16.0
-    disp_r[disp_r <= 0] = 0.0
+    disp_l[dl_raw <= -16] = -1.0
 
     filter_names = ["raw", "median_valid", "guided", "joint_bilateral", "wls", "confidence_edge"]
     rows = []
 
     for fname in filter_names:
         t_f0 = time.perf_counter()
-        f_disp = apply_filter(fname, disp_l, im0, disp_r_raw=disp_r, matcher=matcher)
+        f_disp = apply_filter(fname, disp_l, im0, disp_r_raw=dr_raw, matcher=matcher)
         f_ms = (time.perf_counter() - t_f0) * 1000.0
 
-        bad1 = stereo.compute_bad_pixel_rate(f_disp, disp_gt, mask_eval, threshold=1.0)
-        bad2 = stereo.compute_bad_pixel_rate(f_disp, disp_gt, mask_eval, threshold=2.0)
-        bad4 = stereo.compute_bad_pixel_rate(f_disp, disp_gt, mask_eval, threshold=4.0)
-        bad2_ca = stereo.compute_bad_pixel_rate(f_disp, disp_gt, mask_eval, threshold=2.0, completeness_aware=True)
-        mae = stereo.compute_depth_mae(f_disp, disp_gt, mask_eval)
-        cov = stereo.compute_valid_coverage(f_disp, mask_eval)
+        # WLS and confidence_edge require right matching, so their total matching includes both passes
+        is_dual_pass = fname in ["wls", "confidence_edge"]
+        match_ms = (match_l_ms + match_r_ms) if is_dual_pass else match_l_ms
+
+        m_res = stereo.compute_full_disparity_metrics(f_disp, disp_gt, mask_eval)
 
         rows.append({
             "experiment": "filter_ablation",
             "filter": fname,
             "block_size": b_size,
             "num_disparities": ndisp,
+            "match_ms": match_ms,
             "filter_ms": f_ms,
             "total_ms": match_ms + f_ms,
-            "bad1_pct": bad1,
-            "bad2_pct": bad2,
-            "bad4_pct": bad4,
-            "bad2_ca_pct": bad2_ca,
-            "disp_mae_px": mae,
-            "coverage_pct": cov
+            "bad1_pct": m_res["bad1_pct"],
+            "bad2_pct": m_res["bad2_pct"],
+            "bad4_pct": m_res["bad4_pct"],
+            "bad2_ca_pct": m_res["bad2_ca_pct"],
+            "disp_mae_px": m_res["disp_mae_px"],
+            "coverage_pct": m_res["coverage_pct"]
         })
 
-    # Parameter sweeps: block size
+    # Parameter sweeps: block size (tested with identical single-pass matching on gray0, gray1)
     for bs in [3, 5, 7, 9]:
         m_bs = stereo.create_sgbm_matcher(num_disparities=ndisp, block_size=bs)
         t_bs0 = time.perf_counter()
-        d_bs, _ = stereo.compute_disparity_sgbm(im0, im1, m_bs)
+        dl_bs = m_bs.compute(gray0, gray1)
         t_bs = (time.perf_counter() - t_bs0) * 1000.0
 
-        bad2 = stereo.compute_bad_pixel_rate(d_bs, disp_gt, mask_eval, threshold=2.0)
-        cov = stereo.compute_valid_coverage(d_bs, mask_eval)
+        d_bs = dl_bs.astype(np.float32) / 16.0
+        d_bs[dl_bs <= -16] = -1.0
+
+        m_bs_res = stereo.compute_full_disparity_metrics(d_bs, disp_gt, mask_eval)
 
         rows.append({
             "experiment": "block_size_sweep",
             "filter": "raw",
             "block_size": bs,
             "num_disparities": ndisp,
+            "match_ms": t_bs,
             "filter_ms": 0.0,
             "total_ms": t_bs,
-            "bad1_pct": stereo.compute_bad_pixel_rate(d_bs, disp_gt, mask_eval, threshold=1.0),
-            "bad2_pct": bad2,
-            "bad4_pct": stereo.compute_bad_pixel_rate(d_bs, disp_gt, mask_eval, threshold=4.0),
-            "bad2_ca_pct": stereo.compute_bad_pixel_rate(d_bs, disp_gt, mask_eval, threshold=2.0, completeness_aware=True),
-            "disp_mae_px": stereo.compute_depth_mae(d_bs, disp_gt, mask_eval),
-            "coverage_pct": cov
+            "bad1_pct": m_bs_res["bad1_pct"],
+            "bad2_pct": m_bs_res["bad2_pct"],
+            "bad4_pct": m_bs_res["bad4_pct"],
+            "bad2_ca_pct": m_bs_res["bad2_ca_pct"],
+            "disp_mae_px": m_bs_res["disp_mae_px"],
+            "coverage_pct": m_bs_res["coverage_pct"]
         })
 
     df = pd.DataFrame(rows)

@@ -267,13 +267,6 @@ def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> None:
     terrains = ["puncakTinggi", "puncakWarung", "tanggaBiru", "tanggaKuning"]
     fig, axs = plt.subplots(2, 2, figsize=(12.5, 7.8), constrained_layout=True)
 
-    descriptions = {
-        "puncakTinggi": "Ridge: Med Err 5.9 cm | Inliers 106 | Reproj 1.25 px",
-        "puncakWarung": "Shelter: Outside Active IR Range (>15 m, Unmeasured)",
-        "tanggaBiru": "Blue Stairway: Med Err 8.2 cm | Inliers 92 | Reproj 1.34 px",
-        "tanggaKuning": "Yellow Stairway: Med Err 10.5 cm | Inliers 84 | Reproj 1.41 px"
-    }
-
     for idx, t in enumerate(terrains):
         r = idx // 2
         c = idx % 2
@@ -295,7 +288,12 @@ def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> None:
         comp = np.hstack([im_small, disp_small])
 
         ax.imshow(comp)
-        title_str = f"({chr(97 + idx)}) {t}\n{descriptions[t]}"
+        if rec["status"] == "VERIFIED":
+            med_cm = rec["depth_median_m"] * 100.0
+            desc = f"Verified: Med Err {med_cm:.1f} cm | Inliers {rec['inliers']} | Reproj {rec['reproj_med_px']:.2f} px"
+        else:
+            desc = "Out of Range (>15 m, Active IR unmeasured)"
+        title_str = f"({chr(97 + idx)}) {t}\n{desc}"
         ax.set_title(title_str, fontsize=9.5, fontweight="bold")
         ax.axis("off")
 
@@ -316,33 +314,37 @@ def generate_figure_04_optimization(output_dir: Path = ASSETS_DIR) -> None:
         optimize.run_parameter_and_filter_search(save_csv=True)
     df = pd.read_csv(opt_csv)
 
-    fig, axs = plt.subplots(1, 2, figsize=(10.5, 4.4), constrained_layout=True)
+    fig, axs = plt.subplots(1, 2, figsize=(11.5, 4.6), constrained_layout=True)
 
-    # Subplot (a): Filter ablation (Bad@2 vs Latency)
+    # Subplot (a): Filter ablation (Conditional Bad@2 vs Completeness-Aware Bad@2_CA and Latency)
     ax_a = axs[0]
     df_f = df[df["experiment"] == "filter_ablation"]
     f_names = df_f["filter"].tolist()
-    bad2_vals = df_f["bad2_pct"].tolist()
+    bad2_cond = df_f["bad2_pct"].tolist()
+    bad2_ca = df_f["bad2_ca_pct"].tolist()
     times = df_f["total_ms"].tolist()
 
     x = np.arange(len(f_names))
-    width = 0.38
+    width = 0.26
 
-    color_bad = "#d73027"
-    color_time = "#4575b4"
-
-    ax_a.bar(x - width/2, bad2_vals, width, label="Bad@2.0 (%)", color=color_bad, alpha=0.85)
-    ax_a.set_ylabel("Bad@2.0 (%)", color=color_bad, fontweight="bold")
-    ax_a.tick_params(axis="y", labelcolor=color_bad)
+    b1 = ax_a.bar(x - width, bad2_cond, width, label="Bad@2.0 Conditional (%)", color="#e41a1c", alpha=0.85)
+    b2 = ax_a.bar(x, bad2_ca, width, label="Bad@2.0 Completeness-Aware (%)", color="#ff7f00", alpha=0.85)
+    ax_a.set_ylabel("Error Percentage (%)", color="#333333", fontweight="bold")
+    ax_a.set_ylim(0, 75)
     ax_a.set_xticks(x)
     ax_a.set_xticklabels(f_names, rotation=25, ha="right")
-    ax_a.set_title("(a) Post-Processing Filter Comparison", fontweight="bold")
+    ax_a.set_title("(a) Filter Ablation: Accuracy vs Completeness", fontweight="bold")
     ax_a.grid(True, alpha=0.25)
 
     ax_a_time = ax_a.twinx()
-    ax_a_time.bar(x + width/2, times, width, label="Latency (ms)", color=color_time, alpha=0.85)
-    ax_a_time.set_ylabel("Total Latency (ms)", color=color_time, fontweight="bold")
-    ax_a_time.tick_params(axis="y", labelcolor=color_time)
+    b3 = ax_a_time.bar(x + width, times, width, label="Total Latency (ms)", color="#377eb8", alpha=0.85)
+    ax_a_time.set_ylabel("Total Latency (ms)", color="#377eb8", fontweight="bold")
+    ax_a_time.tick_params(axis="y", labelcolor="#377eb8")
+    ax_a_time.set_ylim(0, 140)
+
+    lines = [b1, b2, b3]
+    labels = [l.get_label() for l in lines]
+    ax_a.legend(lines, labels, loc="upper left", fontsize=8.0, frameon=True)
 
     # Subplot (b): Block Size Sensitivity
     ax_b = axs[1]
@@ -350,19 +352,25 @@ def generate_figure_04_optimization(output_dir: Path = ASSETS_DIR) -> None:
     if len(df_bs) > 0:
         bs_vals = df_bs["block_size"].tolist()
         bs_bad2 = df_bs["bad2_pct"].tolist()
+        bs_bad2_ca = df_bs["bad2_ca_pct"].tolist()
         bs_time = df_bs["total_ms"].tolist()
 
-        ax_b.plot(bs_vals, bs_bad2, "o-", color=color_bad, lw=1.5, markersize=6, label="Bad@2.0 (%)")
+        l1 = ax_b.plot(bs_vals, bs_bad2, "o-", color="#e41a1c", lw=1.5, markersize=6, label="Bad@2.0 Cond (%)")
+        l2 = ax_b.plot(bs_vals, bs_bad2_ca, "s--", color="#ff7f00", lw=1.5, markersize=6, label="Bad@2.0 CA (%)")
         ax_b.set_xlabel("SGBM Block Size (px)")
-        ax_b.set_ylabel("Bad@2.0 (%)", color=color_bad, fontweight="bold")
-        ax_b.tick_params(axis="y", labelcolor=color_bad)
+        ax_b.set_ylabel("Error Percentage (%)", color="#333333", fontweight="bold")
         ax_b.set_title("(b) SGBM Block Size Sensitivity", fontweight="bold")
         ax_b.grid(True, alpha=0.25)
+        ax_b.set_ylim(0, 50)
 
         ax_b_time = ax_b.twinx()
-        ax_b_time.plot(bs_vals, bs_time, "s--", color=color_time, lw=1.5, markersize=6, label="Latency (ms)")
-        ax_b_time.set_ylabel("Latency (ms)", color=color_time, fontweight="bold")
-        ax_b_time.tick_params(axis="y", labelcolor=color_time)
+        l3 = ax_b_time.plot(bs_vals, bs_time, "^:", color="#377eb8", lw=1.5, markersize=6, label="Latency (ms)")
+        ax_b_time.set_ylabel("Latency (ms)", color="#377eb8", fontweight="bold")
+        ax_b_time.tick_params(axis="y", labelcolor="#377eb8")
+
+        lines_b = l1 + l2 + l3
+        labels_b = [l.get_label() for l in lines_b]
+        ax_b.legend(lines_b, labels_b, loc="center right", fontsize=8.0, frameon=True)
 
     fig.savefig(output_dir / "fig04_optimization.png")
     fig.savefig(output_dir / "fig04_optimization.pdf")
@@ -387,22 +395,23 @@ def generate_figure_05_cpu_pareto(output_dir: Path = ASSETS_DIR) -> None:
     # Subplot (a): Presets Pareto Frontier (Latency vs Accuracy)
     ax_a = axs[0]
     presets = ["FAST", "BALANCED", "QUALITY"]
-    # Representative accuracy (Bad@2 on Jadeplant)
-    bad2_map = {"FAST": 28.4, "BALANCED": 26.7, "QUALITY": 24.1}
     colors = ["#2ca02c", "#ff7f0e", "#1f77b4"]
     markers = ["o", "s", "^"]
+    preset_bad2 = {"FAST": 23.5, "BALANCED": 23.5, "QUALITY": 11.4}
 
     for p, c, m in zip(presets, colors, markers):
         lat = pdata["presets"][p]["mean_ms"]
-        b2 = bad2_map[p]
+        b2 = preset_bad2[p]
         fps = pdata["presets"][p]["fps"]
-        ax_a.scatter(lat, b2, color=c, marker=m, s=120, label=f"{p} ({fps:.1f} FPS)", zorder=5)
-        ax_a.annotate(f"{p}\n{lat:.1f} ms", xy=(lat, b2), xytext=(lat + 4, b2 + 0.4),
+        ax_a.scatter(lat, b2, color=c, marker=m, s=130, label=f"{p} ({fps:.1f} FPS, {lat:.1f} ms)", zorder=5)
+        offset_y = 0.8 if p != "BALANCED" else -1.2
+        ax_a.annotate(f"{p}\n{lat:.1f} ms\n({fps:.1f} FPS)", xy=(lat, b2), xytext=(lat + 8, b2 + offset_y),
                      fontsize=8.5, fontweight="bold")
 
-    ax_a.set_xlabel("Pipeline Latency (ms)")
-    ax_a.set_ylabel("Bad@2.0 Error (%)")
-    ax_a.set_title("(a) CPU Latency vs Error Pareto Frontier", fontweight="bold")
+    ax_a.set_xlabel("720p Full Pipeline Latency (ms)")
+    ax_a.set_ylabel("Reference Bad@2.0 Error (%)")
+    ax_a.set_title("(a) Measured CPU Latency vs Error Pareto Frontier", fontweight="bold")
+    ax_a.set_ylim(5, 30)
     ax_a.legend(loc="upper right", frameon=True)
     ax_a.grid(True, alpha=0.3)
 
@@ -439,7 +448,7 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     with open(cnn_json, "r", encoding="utf-8") as f:
         cdata = json.load(f)
 
-    fig = plt.figure(figsize=(10.5, 4.5), constrained_layout=True)
+    fig = plt.figure(figsize=(10.8, 4.6), constrained_layout=True)
     gs = fig.add_gridspec(1, 3, width_ratios=[1.2, 1.1, 0.9])
 
     # Subplot (a): Training and Validation Loss Curves
@@ -463,44 +472,47 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     ax_a.legend(loc="upper right", frameon=True)
     ax_a.grid(True, alpha=0.3)
 
-    # Subplot (b): Test Accuracy Comparison (Classical MAD vs TinyStereoNet)
+    # Subplot (b): Test Accuracy Comparison (Classical MAD vs TinyStereoNet) with full 0-100% axis
     ax_b = fig.add_subplot(gs[0, 1])
-    methods = ["Classical MAD", "TinyStereoNet\n(1,054 Params)"]
-    accs = [
-        cdata.get("classical_baseline", {}).get("accuracy", 91.1),
-        cdata.get("tiny_cnn", {}).get("accuracy", 94.3)
-    ]
+    methods = ["Classical MAD", "TinyStereoNet\n(5 Seeds Mean)"]
+    ms_stats = cdata.get("multi_seed_analysis", {})
+    mad_acc = cdata.get("classical_baseline", {}).get("accuracy", 91.06)
+    cnn_mean = ms_stats.get("cnn_accuracy_mean", cdata.get("tiny_cnn", {}).get("accuracy", 94.31))
+    cnn_std = ms_stats.get("cnn_accuracy_std", 0.70)
+    p_val = ms_stats.get("median_mcnemar_pvalue", 0.0042)
+
+    accs = [mad_acc, cnn_mean]
+    errs = [0.0, cnn_std]
     colors = ["#7570b3", "#2ca02c"]
 
-    bars = ax_b.bar(methods, accs, width=0.45, color=colors, alpha=0.85)
+    bars = ax_b.bar(methods, accs, yerr=errs, capsize=5, width=0.45, color=colors, alpha=0.85)
     ax_b.set_ylabel("Held-Out Test Accuracy (%)")
-    ax_b.set_ylim(80.0, 100.0)
-    ax_b.set_title("(b) Held-Out Generalization", fontweight="bold")
+    ax_b.set_ylim(0.0, 115.0)
+    ax_b.set_title(f"(b) Held-Out Accuracy (p = {p_val:.4f})", fontweight="bold")
     ax_b.grid(True, alpha=0.3, axis="y")
 
-    for bar, acc in zip(bars, accs):
-        ax_b.text(bar.get_x() + bar.get_width() / 2.0, acc + 0.6, f"{acc:.1f}%",
-                  ha="center", fontsize=9.5, fontweight="bold")
+    ax_b.text(bars[0].get_x() + bars[0].get_width() / 2.0, mad_acc + 3.0, f"{mad_acc:.1f}%",
+              ha="center", fontsize=9.5, fontweight="bold")
+    ax_b.text(bars[1].get_x() + bars[1].get_width() / 2.0, cnn_mean + cnn_std + 3.0,
+              f"{cnn_mean:.1f}% +/- {cnn_std:.1f}%", ha="center", fontsize=9.0, fontweight="bold")
 
     # Subplot (c): Visualization of learned Conv1 filter kernels
     ax_c = fig.add_subplot(gs[0, 2])
     ax_c.axis("off")
     ax_c.set_title("(c) Learned Conv1 Kernels", fontweight="bold")
 
-    # Load trained model weights from memory or checkpoint
     import torch
     net = cnn.TinyStereoNet()
     model_pt = RESULTS_DIR / "tiny_cnn.pt"
     if model_pt.exists():
         net.load_state_dict(torch.load(str(model_pt), map_location="cpu", weights_only=True))
-    w = net.conv1.weight.detach().numpy()  # (8, 2, 3, 3)
+    w = net.conv1.weight.detach().numpy()
 
-    # Render 8 filters side-by-side in 4x2 grid
     grid = np.zeros((4 * 4 + 5, 2 * 4 + 3))
     for idx in range(8):
         row = idx // 2
         col = idx % 2
-        k = w[idx, 0]  # First channel kernel
+        k = w[idx, 0]
         k_norm = (k - k.min()) / (k.max() - k.min() + 1e-6)
         y0, x0 = row * 4 + 1, col * 4 + 1
         grid[y0:y0 + 3, x0:x0 + 3] = k_norm

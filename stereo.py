@@ -9,11 +9,33 @@ Provides lightweight, reproducible tools for educational stereo correspondence:
 6. Camera calibration and rectification utilities.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 import time
-from typing import Dict, Tuple, Optional, Any
+from typing import Dict, Tuple, Optional, Any, List
 import cv2
 import numpy as np
+
+
+@dataclass
+class DisparityResult:
+    """Structured container preserving raw and processed stereo disparity.
+
+    Attributes:
+        raw: Raw signed int16 output from OpenCV matcher (scaled by 16).
+        disp: Floating-point disparity in pixels (raw / 16.0).
+        valid_mask: Boolean mask of valid matcher predictions (raw > (min_disp - 1) * 16).
+        runtime_ms: Matching execution time in milliseconds.
+        min_disp: Minimum disparity search offset.
+        num_disp: Number of disparity search levels.
+    """
+    raw: np.ndarray
+    disp: np.ndarray
+    valid_mask: np.ndarray
+    runtime_ms: float
+    min_disp: int = 0
+    num_disp: int = 48
+
 
 
 def generate_constant_disparity_scene(
@@ -309,8 +331,11 @@ def compute_disparity_bm(
 ) -> Tuple[np.ndarray, float]:
     """Execute StereoBM matching and return floating-point disparity in pixels.
 
+    Preserves the negative invalid sentinel (raw < 0) so that valid zero disparity
+    and unmatched pixels remain distinguishable.
+
     Returns:
-        disp: Disparity map (float32). Invalid matches are set to 0.0.
+        disp: Disparity map (float32). Unmatched pixels have negative values (< 0).
         runtime_ms: Execution time in milliseconds.
     """
     gray_l = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY) if left_img.ndim == 3 else left_img
@@ -319,12 +344,16 @@ def compute_disparity_bm(
     if matcher is None:
         matcher = create_bm_matcher()
 
+    min_disp = matcher.getMinDisparity()
+    invalid_sentinel_raw = (min_disp - 1) * 16
+
     t0 = time.perf_counter()
     raw = matcher.compute(gray_l, gray_r)
     runtime_ms = (time.perf_counter() - t0) * 1000.0
 
     disp = raw.astype(np.float32) / 16.0
-    disp[disp <= 0.0] = 0.0
+    # Normalize any matcher invalid sentinel to -1.0 for consistency
+    disp[raw <= invalid_sentinel_raw] = -1.0
     return disp, runtime_ms
 
 
@@ -336,6 +365,9 @@ def compute_disparity_sgbm(
 ) -> Tuple[np.ndarray, float]:
     """Execute StereoSGBM matching and return floating-point disparity in pixels.
 
+    Preserves the negative invalid sentinel (disp < 0) so that valid zero disparity
+    and unmatched pixels remain strictly distinguishable.
+
     Args:
         left_img: Left image (grayscale or color).
         right_img: Right image (grayscale or color).
@@ -343,7 +375,7 @@ def compute_disparity_sgbm(
         use_clahe: If True, applies CLAHE contrast equalization prior to matching.
 
     Returns:
-        disp: Disparity map (float32). Invalid matches are set to 0.0.
+        disp: Disparity map (float32). Unmatched pixels have negative sentinel (< 0).
         runtime_ms: Matching-only execution time in milliseconds.
     """
     gray_l = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY) if left_img.ndim == 3 else left_img.copy()
@@ -357,13 +389,57 @@ def compute_disparity_sgbm(
     if matcher is None:
         matcher = create_sgbm_matcher()
 
+    min_disp = matcher.getMinDisparity()
+    invalid_sentinel_raw = (min_disp - 1) * 16
+
     t0 = time.perf_counter()
     raw = matcher.compute(gray_l, gray_r)
     runtime_ms = (time.perf_counter() - t0) * 1000.0
 
     disp = raw.astype(np.float32) / 16.0
-    disp[disp <= 0.0] = 0.0
+    # Normalize any matcher invalid sentinel to -1.0 for consistency
+    disp[raw <= invalid_sentinel_raw] = -1.0
     return disp, runtime_ms
+
+
+def compute_disparity_sgbm_detailed(
+    left_img: np.ndarray,
+    right_img: np.ndarray,
+    matcher: Optional[cv2.StereoSGBM] = None,
+    use_clahe: bool = False
+) -> DisparityResult:
+    """Execute StereoSGBM returning full DisparityResult with raw array and validity mask."""
+    gray_l = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY) if left_img.ndim == 3 else left_img.copy()
+    gray_r = cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY) if right_img.ndim == 3 else right_img.copy()
+
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray_l = clahe.apply(gray_l)
+        gray_r = clahe.apply(gray_r)
+
+    if matcher is None:
+        matcher = create_sgbm_matcher()
+
+    min_disp = matcher.getMinDisparity()
+    num_disp = matcher.getNumDisparities()
+    invalid_sentinel_raw = (min_disp - 1) * 16
+
+    t0 = time.perf_counter()
+    raw = matcher.compute(gray_l, gray_r)
+    runtime_ms = (time.perf_counter() - t0) * 1000.0
+
+    valid_mask = raw > invalid_sentinel_raw
+    disp = raw.astype(np.float32) / 16.0
+    disp[~valid_mask] = -1.0
+
+    return DisparityResult(
+        raw=raw,
+        disp=disp,
+        valid_mask=valid_mask,
+        runtime_ms=runtime_ms,
+        min_disp=min_disp,
+        num_disp=num_disp
+    )
 
 
 def compute_bad_pixel_rate(
@@ -371,7 +447,9 @@ def compute_bad_pixel_rate(
     disp_gt: np.ndarray,
     valid_mask: np.ndarray,
     threshold: float = 2.0,
-    completeness_aware: bool = False
+    completeness_aware: bool = False,
+    pred_valid_mask: Optional[np.ndarray] = None,
+    min_gt_disp: float = 0.0
 ) -> float:
     """Compute the percentage of pixels with disparity error exceeding threshold.
 
@@ -380,41 +458,56 @@ def compute_bad_pixel_rate(
         disp_gt: Reference ground-truth disparity map (float32).
         valid_mask: Boolean mask of reference pixels to evaluate.
         threshold: Error tolerance in pixels (default 2.0 px).
-        completeness_aware: If True, missing predictions (pred <= 0) count as errors.
+        completeness_aware: If True, missing predictions count as errors over total N_ref.
+            Formula: Bad_CA = (N_missing + N_bad_valid) / N_ref.
+            If False (conditional): Bad_valid = N_bad_valid / N_valid.
+        pred_valid_mask: Optional boolean mask specifying which predictions are valid.
+        min_gt_disp: Minimum valid ground-truth disparity (default 0.0 px).
 
     Returns:
-        bad_rate: Percentage in [0.0, 100.0].
+        bad_rate: Percentage in [0.0, 100.0], or float('nan') if denominator is zero.
     """
-    eval_mask = valid_mask & (disp_gt > 0) & np.isfinite(disp_gt)
+    eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
     n_gt = np.count_nonzero(eval_mask)
     if n_gt == 0:
-        return 0.0
+        return float("nan")
 
-    pred_valid = (disp_pred > 0) & eval_mask
-    error = np.abs(disp_pred - disp_gt)
+    if pred_valid_mask is not None:
+        pred_valid = pred_valid_mask & eval_mask & np.isfinite(disp_pred)
+    else:
+        # Values >= 0 are valid predictions (negative sentinel indicates unmatched)
+        pred_valid = eval_mask & np.isfinite(disp_pred) & (disp_pred >= 0.0)
+
+    n_valid = np.count_nonzero(pred_valid)
 
     if completeness_aware:
-        bad_error = pred_valid & (error > threshold)
-        missing = eval_mask & (~(disp_pred > 0))
+        # Completeness-aware: missing predictions within reference region count as errors
+        bad_error = pred_valid & (np.abs(disp_pred - disp_gt) > threshold)
+        missing = eval_mask & (~pred_valid)
         bad_count = np.count_nonzero(bad_error) + np.count_nonzero(missing)
+        return float(bad_count / n_gt * 100.0)
     else:
-        # Standard Middlebury protocol on valid predictions
-        n_eval = np.count_nonzero(pred_valid)
-        if n_eval == 0:
-            return 100.0
-        bad_count = np.count_nonzero(pred_valid & (error > threshold))
-        return float(bad_count / n_eval * 100.0)
-
-    return float(bad_count / n_gt * 100.0)
+        # Conditional accuracy on valid predictions only
+        if n_valid == 0:
+            return float("nan")
+        bad_count = np.count_nonzero(pred_valid & (np.abs(disp_pred - disp_gt) > threshold))
+        return float(bad_count / n_valid * 100.0)
 
 
 def compute_depth_mae(
     disp_pred: np.ndarray,
     disp_gt: np.ndarray,
-    valid_mask: np.ndarray
+    valid_mask: np.ndarray,
+    pred_valid_mask: Optional[np.ndarray] = None,
+    min_gt_disp: float = 0.0
 ) -> float:
     """Mean absolute error in disparity over jointly valid evaluation pixels."""
-    joint = valid_mask & (disp_gt > 0) & (disp_pred > 0) & np.isfinite(disp_pred)
+    eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
+    if pred_valid_mask is not None:
+        joint = eval_mask & pred_valid_mask & np.isfinite(disp_pred)
+    else:
+        joint = eval_mask & np.isfinite(disp_pred) & (disp_pred >= 0.0)
+
     if np.count_nonzero(joint) == 0:
         return float("nan")
     return float(np.mean(np.abs(disp_pred[joint] - disp_gt[joint])))
@@ -423,27 +516,147 @@ def compute_depth_mae(
 def compute_depth_rmse(
     disp_pred: np.ndarray,
     disp_gt: np.ndarray,
-    valid_mask: np.ndarray
+    valid_mask: np.ndarray,
+    pred_valid_mask: Optional[np.ndarray] = None,
+    min_gt_disp: float = 0.0
 ) -> float:
     """Root mean square error in disparity over jointly valid evaluation pixels."""
-    joint = valid_mask & (disp_gt > 0) & (disp_pred > 0) & np.isfinite(disp_pred)
+    eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
+    if pred_valid_mask is not None:
+        joint = eval_mask & pred_valid_mask & np.isfinite(disp_pred)
+    else:
+        joint = eval_mask & np.isfinite(disp_pred) & (disp_pred >= 0.0)
+
     if np.count_nonzero(joint) == 0:
         return float("nan")
     return float(np.sqrt(np.mean((disp_pred[joint] - disp_gt[joint]) ** 2)))
 
 
+def compute_depth_median_ae(
+    disp_pred: np.ndarray,
+    disp_gt: np.ndarray,
+    valid_mask: np.ndarray,
+    pred_valid_mask: Optional[np.ndarray] = None,
+    min_gt_disp: float = 0.0
+) -> float:
+    """Median absolute error in disparity over jointly valid evaluation pixels."""
+    eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
+    if pred_valid_mask is not None:
+        joint = eval_mask & pred_valid_mask & np.isfinite(disp_pred)
+    else:
+        joint = eval_mask & np.isfinite(disp_pred) & (disp_pred >= 0.0)
+
+    if np.count_nonzero(joint) == 0:
+        return float("nan")
+    return float(np.median(np.abs(disp_pred[joint] - disp_gt[joint])))
+
+
 def compute_valid_coverage(
     disp: np.ndarray,
-    valid_mask: Optional[np.ndarray] = None
+    valid_mask: Optional[np.ndarray] = None,
+    pred_valid_mask: Optional[np.ndarray] = None
 ) -> float:
-    """Percentage of valid disparity predictions (d > 0)."""
+    """Percentage of valid disparity predictions (d >= 0) within the reference mask."""
     if valid_mask is not None:
         denom = np.count_nonzero(valid_mask)
         if denom == 0:
             return 0.0
-        num = np.count_nonzero((disp > 0) & valid_mask)
+        if pred_valid_mask is not None:
+            num = np.count_nonzero(pred_valid_mask & valid_mask)
+        else:
+            num = np.count_nonzero((disp >= 0.0) & np.isfinite(disp) & valid_mask)
         return float(num / denom * 100.0)
-    return float(np.count_nonzero(disp > 0) / disp.size * 100.0)
+
+    if pred_valid_mask is not None:
+        return float(np.count_nonzero(pred_valid_mask) / disp.size * 100.0)
+    return float(np.count_nonzero((disp >= 0.0) & np.isfinite(disp)) / disp.size * 100.0)
+
+
+def compute_full_disparity_metrics(
+    disp_pred: np.ndarray,
+    disp_gt: np.ndarray,
+    valid_mask: np.ndarray,
+    pred_valid_mask: Optional[np.ndarray] = None,
+    thresholds: Tuple[float, ...] = (1.0, 2.0, 4.0),
+    min_gt_disp: float = 0.0
+) -> Dict[str, Any]:
+    """Calculate complete accuracy and completeness disparity evaluation.
+
+    Satisfies Part 4.3 requirements:
+    A. Conditional bad-pixel percentage over valid predictions.
+    B. Valid prediction coverage over fixed reference region.
+    C. Completeness-aware bad-pixel percentage.
+    D. Conditional disparity MAE.
+    E. RMSE.
+    F. Median absolute error.
+    G. Invalid prediction percentage.
+    H. Total evaluated reference pixels.
+    """
+    eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
+    n_gt = int(np.count_nonzero(eval_mask))
+
+    if pred_valid_mask is not None:
+        pred_valid = pred_valid_mask & eval_mask & np.isfinite(disp_pred)
+    else:
+        pred_valid = eval_mask & np.isfinite(disp_pred) & (disp_pred >= 0.0)
+
+    n_valid = int(np.count_nonzero(pred_valid))
+
+    if n_gt == 0:
+        return {
+            "eval_pixels": 0,
+            "valid_predictions": 0,
+            "coverage_pct": 0.0,
+            "invalid_pct": 100.0,
+            "bad1_pct": float("nan"),
+            "bad2_pct": float("nan"),
+            "bad4_pct": float("nan"),
+            "bad1_ca_pct": float("nan"),
+            "bad2_ca_pct": float("nan"),
+            "bad4_ca_pct": float("nan"),
+            "disp_mae_px": float("nan"),
+            "disp_rmse_px": float("nan"),
+            "disp_median_ae_px": float("nan"),
+        }
+
+    cov_pct = float(n_valid / n_gt * 100.0)
+    inv_pct = float(100.0 - cov_pct)
+
+    res: Dict[str, Any] = {
+        "eval_pixels": n_gt,
+        "valid_predictions": n_valid,
+        "coverage_pct": cov_pct,
+        "invalid_pct": inv_pct,
+    }
+
+    # Error metrics over valid predictions
+    if n_valid > 0:
+        errs = np.abs(disp_pred[pred_valid] - disp_gt[pred_valid])
+        res["disp_mae_px"] = float(np.mean(errs))
+        res["disp_rmse_px"] = float(np.sqrt(np.mean(errs ** 2)))
+        res["disp_median_ae_px"] = float(np.median(errs))
+
+        for th in thresholds:
+            th_str = f"bad{int(th)}_pct" if th.is_integer() else f"bad_{th:.1f}_pct"
+            th_ca_str = f"bad{int(th)}_ca_pct" if th.is_integer() else f"bad_{th:.1f}_ca_pct"
+
+            n_bad = np.count_nonzero(errs > th)
+            res[th_str] = float(n_bad / n_valid * 100.0)
+
+            n_missing = n_gt - n_valid
+            res[th_ca_str] = float((n_bad + n_missing) / n_gt * 100.0)
+    else:
+        res["disp_mae_px"] = float("nan")
+        res["disp_rmse_px"] = float("nan")
+        res["disp_median_ae_px"] = float("nan")
+
+        for th in thresholds:
+            th_str = f"bad{int(th)}_pct" if th.is_integer() else f"bad_{th:.1f}_pct"
+            th_ca_str = f"bad{int(th)}_ca_pct" if th.is_integer() else f"bad_{th:.1f}_ca_pct"
+            res[th_str] = float("nan")
+            res[th_ca_str] = 100.0
+
+    return res
 
 
 def disparity_to_depth(
@@ -459,6 +672,59 @@ def disparity_to_depth(
     valid = (disp >= min_disp) & (denom > 0) & np.isfinite(disp)
     depth[valid] = (focal_length_px * baseline_m) / denom[valid]
     return depth
+
+
+def compute_depth_sensitivity(
+    depth_m: float,
+    focal_length_px: float,
+    baseline_m: float,
+    delta_disp_px: float = 1.0
+) -> Dict[str, float]:
+    """Calculate first-order Taylor and exact non-linear stereo depth sensitivity.
+
+    For ideal rectified stereo, nominal depth is Z = (f * B) / d.
+    First-order sensitivity approximation:
+        |Delta Z| ~ Z^2 * |Delta d| / (f * B)
+
+    Exact non-linear sensitivity (asymmetric):
+        Delta Z_closer = Z - (f * B) / (d + Delta d) = Z^2 / (fB + Z * Delta d)
+        Delta Z_farther = (f * B) / (d - Delta d) - Z = Z^2 / (fB - Z * Delta d)
+
+    Args:
+        depth_m: Nominal object distance in meters.
+        focal_length_px: Rectified camera focal length in pixels.
+        baseline_m: Physical camera baseline in meters.
+        delta_disp_px: Perturbation magnitude in pixels (default 1.0 px).
+
+    Returns:
+        Dictionary containing theoretical sensitivity values in meters.
+    """
+    fb = focal_length_px * baseline_m
+    d_nominal = fb / depth_m
+
+    # First-order linear approximation
+    delta_z_linear = (depth_m ** 2) * abs(delta_disp_px) / fb
+
+    # Exact non-linear triangulation
+    d_plus = d_nominal + abs(delta_disp_px)
+    z_closer = fb / d_plus
+    delta_z_closer = depth_m - z_closer
+
+    d_minus = d_nominal - abs(delta_disp_px)
+    if d_minus > 0:
+        z_farther = fb / d_minus
+        delta_z_farther = z_farther - depth_m
+    else:
+        delta_z_farther = float("inf")
+
+    return {
+        "fb_product": fb,
+        "nominal_disparity_px": d_nominal,
+        "delta_z_first_order_m": delta_z_linear,
+        "delta_z_exact_closer_m": delta_z_closer,
+        "delta_z_exact_farther_m": delta_z_farther
+    }
+
 
 
 def compute_lr_consistency(

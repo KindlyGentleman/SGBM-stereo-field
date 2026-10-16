@@ -16,16 +16,14 @@ def test_filter_suite_application():
 
     dl_raw = m.compute(left, right)
     disp_l = dl_raw.astype(np.float32) / 16.0
-    disp_l[disp_l <= 0] = 0.0
+    disp_l[dl_raw <= -16] = -1.0
 
     dr_raw = rm.compute(right, left) if rm is not None else dl_raw
-    disp_r = dr_raw.astype(np.float32) / 16.0
-    disp_r[disp_r <= 0] = 0.0
 
     # Test raw, median_valid, guided, joint_bilateral, wls, confidence_edge
     f_raw = optimize.apply_filter("raw", disp_l, left)
     assert f_raw.shape == disp_l.shape
-    assert np.all(f_raw >= 0.0)
+    assert np.any(np.isclose(f_raw[f_raw >= 0], 16.0, atol=2.0))
 
     f_med = optimize.apply_filter("median_valid", disp_l, left)
     assert f_med.shape == disp_l.shape
@@ -37,11 +35,12 @@ def test_filter_suite_application():
     f_jb = optimize.apply_filter("joint_bilateral", disp_l, left_bgr)
     assert f_jb.shape == disp_l.shape
 
-    f_wls = optimize.apply_filter("wls", disp_l, left, disp_r_raw=disp_r, matcher=m)
+    f_wls = optimize.apply_filter("wls", disp_l, left, disp_r_raw=dr_raw, matcher=m)
     assert f_wls.shape == disp_l.shape
 
-    f_conf = optimize.apply_filter("confidence_edge", disp_l, left, disp_r_raw=disp_r, matcher=m)
+    f_conf = optimize.apply_filter("confidence_edge", disp_l, left, disp_r_raw=dr_raw, matcher=m)
     assert f_conf.shape == disp_l.shape
+
 
 
 def test_pipeline_presets_execution():

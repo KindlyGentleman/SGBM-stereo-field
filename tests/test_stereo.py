@@ -100,7 +100,7 @@ def test_sad_matching_cost_profile():
 
 
 def test_disparity_scaling_and_invalid_handling():
-    """Verify OpenCV fixed-point scaling (/ 16.0) and negative sentinel clamping."""
+    """Verify OpenCV fixed-point scaling (/ 16.0) and negative invalid sentinel preservation."""
     left, right, _, _ = stereo.generate_constant_disparity_scene(160, 120, disparity=8)
 
     disp_bm, _ = stereo.compute_disparity_bm(left, right)
@@ -108,8 +108,20 @@ def test_disparity_scaling_and_invalid_handling():
 
     assert disp_bm.dtype == np.float32
     assert disp_sgbm.dtype == np.float32
-    assert np.all(disp_bm >= 0.0)
-    assert np.all(disp_sgbm >= 0.0)
+
+    # Border or unmatched pixels have negative invalid sentinels (-1.0)
+    # Valid matches have disp >= 0.0 (near 8.0 px)
+    assert np.any(disp_bm < 0.0), "BM should preserve invalid sentinel for unmatched border pixels"
+    assert np.any(disp_sgbm < 0.0), "SGBM should preserve invalid sentinel for unmatched border pixels"
+    assert np.any(np.isclose(disp_sgbm[disp_sgbm >= 0.0], 8.0, atol=1.5)), "Valid matches must be near 8.0 px"
+
+    # Test detailed container
+    res = stereo.compute_disparity_sgbm_detailed(left, right)
+    assert isinstance(res, stereo.DisparityResult)
+    assert res.raw.dtype == np.int16
+    assert res.disp.dtype == np.float32
+    assert res.valid_mask.dtype == bool
+    assert res.valid_mask.shape == (120, 160)
 
 
 def test_parameter_constraints():
@@ -157,46 +169,147 @@ def test_calibration_validation_and_failures():
 
 
 def test_disparity_to_depth():
-    """Verify metric depth triangulation formula: Z = (f * B) / d."""
-    disp = np.array([[10.0, 20.0], [0.0, -2.0]], dtype=np.float32)
+    """Verify metric depth triangulation formula: Z = (f * B) / (d + doffs)."""
+    disp = np.array([[10.0, 20.0], [-1.0, 0.0]], dtype=np.float32)
     fx = 800.0       # pixels
     baseline = 0.1   # meters (100 mm)
 
-    # Expected: 800 * 0.1 / 10 = 8.0 m, 800 * 0.1 / 20 = 4.0 m, invalid = 0.0
+    # Expected: 800 * 0.1 / 10 = 8.0 m, 800 * 0.1 / 20 = 4.0 m
+    # With min_disp=0.5:
+    # disp -1.0 -> 0.0 (invalid)
+    # disp 0.0 -> 0.0 (below min_disp)
     depth = stereo.disparity_to_depth(disp, fx, baseline, min_disp=0.5)
     assert np.isclose(depth[0, 0], 8.0)
     assert np.isclose(depth[0, 1], 4.0)
     assert depth[1, 0] == 0.0
     assert depth[1, 1] == 0.0
 
+    # Test with doffs: Z = 800 * 0.1 / (10.0 + 10.0) = 4.0 m
+    depth_doffs = stereo.disparity_to_depth(disp, fx, baseline, min_disp=0.5, doffs=10.0)
+    assert np.isclose(depth_doffs[0, 0], 4.0)
 
-def test_bad_pixel_rate_and_completeness():
-    """Verify standard and completeness-aware bad-pixel metric calculation."""
-    gt = np.array([
-        [10.0, 10.0, 10.0],
-        [10.0, 10.0, 10.0]
-    ], dtype=np.float32)
-    mask = np.ones((2, 3), dtype=bool)
 
-    # Pred:
-    # (0,0): 10.0 (err 0, correct)
-    # (0,1): 11.5 (err 1.5 <= 2.0, correct)
-    # (0,2): 13.5 (err 3.5 > 2.0, wrong)
-    # (1,0): 10.0 (err 0, correct)
-    # (1,1): 0.0  (missing)
-    # (1,2): 0.0  (missing)
-    pred = np.array([
-        [10.0, 11.5, 13.5],
-        [10.0, 0.0, 0.0]
-    ], dtype=np.float32)
+def test_comprehensive_hand_calculated_metrics():
+    """Verify all Part 4.4 hand-calculated metric conditions and invariants.
 
-    # Standard Bad@2: 1 wrong out of 4 valid predictions = 25.0%
-    bad_std = stereo.compute_bad_pixel_rate(pred, gt, mask, threshold=2.0, completeness_aware=False)
-    assert np.isclose(bad_std, 25.0)
+    Conditions tested:
+    1. Fully correct predictions
+    2. Fully incorrect predictions
+    3. Fully missing predictions (empty valid predictions)
+    4. Mixed missing and incorrect predictions
+    5. Valid zero disparity (must be recognized as valid, not missing)
+    6. Negative invalid sentinels (-1.0, -16.0)
+    7. Nonfinite ground truth (NaN, Inf)
+    8. Non-occluded masks
+    9. Empty valid reference region
+    10. Invariance to unrelated pixels outside evaluation mask
+    """
+    # 1. Fully correct predictions
+    gt = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+    pred = np.array([10.0, 20.0, 30.0], dtype=np.float32)
+    mask = np.ones(3, dtype=bool)
 
-    # Completeness-aware Bad@2: (1 wrong + 2 missing) / 6 total = 50.0%
-    bad_ca = stereo.compute_bad_pixel_rate(pred, gt, mask, threshold=2.0, completeness_aware=True)
-    assert np.isclose(bad_ca, 50.0)
+    m1 = stereo.compute_full_disparity_metrics(pred, gt, mask, thresholds=(1.0, 2.0))
+    assert m1["eval_pixels"] == 3
+    assert m1["valid_predictions"] == 3
+    assert np.isclose(m1["coverage_pct"], 100.0)
+    assert np.isclose(m1["invalid_pct"], 0.0)
+    assert np.isclose(m1["bad2_pct"], 0.0)
+    assert np.isclose(m1["bad2_ca_pct"], 0.0)
+    assert np.isclose(m1["disp_mae_px"], 0.0)
+    assert np.isclose(m1["disp_rmse_px"], 0.0)
+    assert np.isclose(m1["disp_median_ae_px"], 0.0)
+
+    # 2. Fully incorrect predictions
+    pred_bad = np.array([15.0, 25.0, 35.0], dtype=np.float32)  # all errors = 5.0 px > 2.0
+    m2 = stereo.compute_full_disparity_metrics(pred_bad, gt, mask, thresholds=(1.0, 2.0))
+    assert np.isclose(m2["bad2_pct"], 100.0)
+    assert np.isclose(m2["bad2_ca_pct"], 100.0)
+    assert np.isclose(m2["disp_mae_px"], 5.0)
+    assert np.isclose(m2["disp_rmse_px"], 5.0)
+    assert np.isclose(m2["disp_median_ae_px"], 5.0)
+
+    # 3. Fully missing predictions (all sentinels)
+    pred_missing = np.array([-1.0, -1.0, -1.0], dtype=np.float32)
+    m3 = stereo.compute_full_disparity_metrics(pred_missing, gt, mask, thresholds=(1.0, 2.0))
+    assert m3["eval_pixels"] == 3
+    assert m3["valid_predictions"] == 0
+    assert np.isclose(m3["coverage_pct"], 0.0)
+    assert np.isclose(m3["invalid_pct"], 100.0)
+    assert np.isnan(m3["bad2_pct"]), "Conditional Bad@T must be NaN when no valid predictions exist"
+    assert np.isclose(m3["bad2_ca_pct"], 100.0), "Completeness-aware Bad@T must be 100% when all missing"
+    assert np.isnan(m3["disp_mae_px"])
+    assert np.isnan(m3["disp_rmse_px"])
+    assert np.isnan(m3["disp_median_ae_px"])
+
+    # 4. Mixed: 4 pixels total
+    # pixel 0: gt 10, pred 10.0 (error 0.0, correct)
+    # pixel 1: gt 10, pred 11.5 (error 1.5 <= 2.0, correct at bad@2, wrong at bad@1)
+    # pixel 2: gt 10, pred 14.0 (error 4.0 > 2.0, wrong at bad@2)
+    # pixel 3: gt 10, pred -1.0 (missing)
+    gt4 = np.array([10.0, 10.0, 10.0, 10.0], dtype=np.float32)
+    pred4 = np.array([10.0, 11.5, 14.0, -1.0], dtype=np.float32)
+    mask4 = np.ones(4, dtype=bool)
+
+    m4 = stereo.compute_full_disparity_metrics(pred4, gt4, mask4, thresholds=(1.0, 2.0))
+    assert m4["eval_pixels"] == 4
+    assert m4["valid_predictions"] == 3
+    assert np.isclose(m4["coverage_pct"], 75.0)  # 3/4
+    assert np.isclose(m4["invalid_pct"], 25.0)   # 1/4
+
+    # Valid errors: 0.0, 1.5, 4.0.
+    # At Bad@2: 1 wrong out of 3 valid = 33.333%
+    assert np.isclose(m4["bad2_pct"], 100.0 / 3.0)
+    # At Bad@2 Completeness-Aware: (1 wrong + 1 missing) / 4 total = 50.0%
+    assert np.isclose(m4["bad2_ca_pct"], 50.0)
+    # Check formula equality: (1 - 0.75) + 0.75 * (1/3) = 0.50
+    assert np.isclose(m4["bad2_ca_pct"], (1.0 - 0.75 + 0.75 * (1.0 / 3.0)) * 100.0)
+
+    # MAE over 3 valid = (0.0 + 1.5 + 4.0) / 3 = 5.5 / 3 = 1.8333
+    assert np.isclose(m4["disp_mae_px"], 5.5 / 3.0)
+    # Median over 3 valid = 1.5
+    assert np.isclose(m4["disp_median_ae_px"], 1.5)
+
+    # 5. Valid zero disparity
+    gt_zero = np.array([0.0, 10.0], dtype=np.float32)
+    pred_zero = np.array([0.0, 10.0], dtype=np.float32)
+    m_zero = stereo.compute_full_disparity_metrics(pred_zero, gt_zero, np.ones(2, dtype=bool))
+    assert m_zero["eval_pixels"] == 2
+    assert m_zero["valid_predictions"] == 2, "Disparity 0.0 must be recognized as valid match"
+    assert np.isclose(m_zero["coverage_pct"], 100.0)
+    assert np.isclose(m_zero["bad2_pct"], 0.0)
+
+    # 6. Nonfinite ground truth (NaN, Inf) and negative invalid sentinels
+    gt_nan = np.array([np.nan, np.inf, 10.0, 10.0], dtype=np.float32)
+    pred_nan = np.array([10.0, 10.0, 10.0, -16.0], dtype=np.float32)
+    m_nan = stereo.compute_full_disparity_metrics(pred_nan, gt_nan, np.ones(4, dtype=bool))
+    # Only 2 finite reference pixels exist (pixels 2 and 3)
+    assert m_nan["eval_pixels"] == 2
+    # Pixel 2 is valid (10), Pixel 3 is invalid sentinel (-16)
+    assert m_nan["valid_predictions"] == 1
+    assert np.isclose(m_nan["coverage_pct"], 50.0)
+    assert np.isclose(m_nan["bad2_pct"], 0.0)
+    assert np.isclose(m_nan["bad2_ca_pct"], 50.0)
+
+    # 7. Empty valid reference region
+    gt_empty = np.array([np.nan, -5.0], dtype=np.float32)
+    m_empty = stereo.compute_full_disparity_metrics(np.zeros(2), gt_empty, np.array([False, False]))
+    assert m_empty["eval_pixels"] == 0
+    assert m_empty["coverage_pct"] == 0.0
+    assert np.isnan(m_empty["bad2_pct"])
+    assert np.isnan(m_empty["bad2_ca_pct"])
+
+    # 8. Invariance to unrelated pixels outside evaluation mask
+    gt_inv = np.array([10.0, 999.0], dtype=np.float32)
+    pred_inv = np.array([10.0, -999.0], dtype=np.float32)
+    mask_inv = np.array([True, False], dtype=bool)
+    m_inv = stereo.compute_full_disparity_metrics(pred_inv, gt_inv, mask_inv)
+    assert m_inv["eval_pixels"] == 1
+    assert m_inv["valid_predictions"] == 1
+    assert np.isclose(m_inv["coverage_pct"], 100.0)
+    assert np.isclose(m_inv["bad2_pct"], 0.0)
+    assert np.isclose(m_inv["disp_mae_px"], 0.0)
+
 
 
 def test_perturbations():
@@ -215,3 +328,41 @@ def test_perturbations():
 
     gamma = stereo.apply_perturbation(img, "gamma_high")
     assert gamma.shape == img.shape
+
+
+def test_depth_sensitivity_and_physics_scaling():
+    """Verify depth sensitivity across distances and resolution scaling invariance."""
+    f_px = 964.68366
+    b_m = 0.097497
+    fb = f_px * b_m
+    assert np.isclose(fb, 94.0537, atol=0.001)
+
+    # Test 1m, 2m, 5m, 10m, 15m theoretical sensitivities for 1 px error
+    sens_1m = stereo.compute_depth_sensitivity(1.0, f_px, b_m, delta_disp_px=1.0)
+    assert np.isclose(sens_1m["delta_z_first_order_m"], 0.01063, atol=1e-4)
+
+    sens_2m = stereo.compute_depth_sensitivity(2.0, f_px, b_m, delta_disp_px=1.0)
+    assert np.isclose(sens_2m["delta_z_first_order_m"], 0.04253, atol=1e-4)
+
+    sens_5m = stereo.compute_depth_sensitivity(5.0, f_px, b_m, delta_disp_px=1.0)
+    assert np.isclose(sens_5m["delta_z_first_order_m"], 0.2658, atol=1e-3)
+
+    sens_10m = stereo.compute_depth_sensitivity(10.0, f_px, b_m, delta_disp_px=1.0)
+    assert np.isclose(sens_10m["delta_z_first_order_m"], 1.0632, atol=1e-3)
+
+    sens_15m = stereo.compute_depth_sensitivity(15.0, f_px, b_m, delta_disp_px=1.0)
+    assert np.isclose(sens_15m["delta_z_first_order_m"], 2.3922, atol=1e-3)
+
+    # Verify exact non-linear asymmetry: farther error > closer error
+    assert sens_5m["delta_z_exact_farther_m"] > sens_5m["delta_z_exact_closer_m"]
+
+    # Resolution scaling invariance:
+    # If image is scaled by factor s, focal length is f*s, disparity is d*s
+    # Depth Z = (f*s * B) / (d*s) = fB / d
+    s = 0.5
+    d_full = np.array([20.0, 40.0], dtype=np.float32)
+    d_half = d_full * s
+    z_full = stereo.disparity_to_depth(d_full, f_px, b_m)
+    z_half = stereo.disparity_to_depth(d_half, f_px * s, b_m)
+    assert np.allclose(z_full, z_half)
+
