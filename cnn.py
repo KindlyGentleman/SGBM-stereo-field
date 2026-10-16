@@ -527,7 +527,7 @@ def run_cnn_multiseed_validation(
 
     seed_records = []
     best_model_overall = None
-    best_acc_overall = -1.0
+    best_val_acc_overall = -1.0
     primary_summary = None
 
     print(f"Running multi-seed validation across {len(seeds)} seeds: {seeds}...")
@@ -537,6 +537,7 @@ def run_cnn_multiseed_validation(
             x_train, y_train, x_val, y_val,
             epochs=epochs, lr=0.008, seed=seed, num_threads=num_threads
         )
+        val_acc_peak = float(history_df["val_acc"].max())
         cnn_metrics, inf_time_s = evaluate_cnn_test(model, x_test, y_test)
         paired = compute_paired_comparison(
             y_test,
@@ -548,6 +549,7 @@ def run_cnn_multiseed_validation(
         rec = {
             "seed": seed,
             "train_time_s": train_time_s,
+            "best_val_accuracy": val_acc_peak,
             "cnn_accuracy": cnn_metrics["accuracy"],
             "cnn_precision": cnn_metrics["precision"],
             "cnn_recall": cnn_metrics["recall"],
@@ -560,18 +562,19 @@ def run_cnn_multiseed_validation(
             "n_discordant": paired["n_discordant"]
         }
         seed_records.append(rec)
-        print(f"  Seed {seed:3d}: CNN Acc={cnn_metrics['accuracy']:.2f}% | MAD Acc={classical_test['accuracy']:.2f}% | Diff={paired['diff']:+.2f}% | McNemar p={paired['mcnemar_exact_pvalue']:.4f}")
+        print(f"  Seed {seed:3d}: Peak Val Acc={val_acc_peak:.2f}% | Test Acc={cnn_metrics['accuracy']:.2f}% | MAD Acc={classical_test['accuracy']:.2f}% | Diff={paired['diff']:+.2f}% | McNemar p={paired['mcnemar_exact_pvalue']:.6f}")
 
-        if cnn_metrics["accuracy"] > best_acc_overall:
-            best_acc_overall = cnn_metrics["accuracy"]
+        # Primary model selection is determined strictly on validation accuracy prior to test evaluation
+        if val_acc_peak > best_val_acc_overall:
+            best_val_acc_overall = val_acc_peak
             best_model_overall = model
-
-        if seed == seeds[0]:
             primary_summary = {
+                "selected_seed": seed,
                 "model_parameters": sum(p.numel() for p in model.parameters()),
                 "epochs": epochs,
                 "cpu_threads": num_threads,
                 "training_time_seconds": train_time_s,
+                "best_val_accuracy": val_acc_peak,
                 "optimal_classical_threshold": opt_thresh,
                 "classical_baseline": {k: v for k, v in classical_test.items() if k != "predictions"},
                 "tiny_cnn": {k: v for k, v in cnn_metrics.items() if k not in ["predictions", "probs"]},
@@ -586,20 +589,22 @@ def run_cnn_multiseed_validation(
 
     multi_seed_stats = {
         "seeds": seeds,
+        "selection_protocol": "Primary model selected via validation accuracy; across-seed distribution is descriptive initialization stability",
         "cnn_accuracy_mean": float(df_seeds["cnn_accuracy"].mean()),
         "cnn_accuracy_std": float(df_seeds["cnn_accuracy"].std()),
         "mad_accuracy": float(classical_test["accuracy"]),
         "acc_diff_mean": float(df_seeds["acc_diff"].mean()),
         "acc_diff_std": float(df_seeds["acc_diff"].std()),
         "mcnemar_pvalues": [float(p) for p in df_seeds["mcnemar_pvalue"]],
-        "median_mcnemar_pvalue": float(df_seeds["mcnemar_pvalue"].median()),
+        "primary_model_seed": primary_summary["selected_seed"] if primary_summary else seeds[0],
+        "primary_model_mcnemar_pvalue": primary_summary["paired_comparison"]["mcnemar_exact_pvalue"] if primary_summary else float(df_seeds["mcnemar_pvalue"].iloc[0]),
         "seed_runs": seed_records
     }
 
     if primary_summary is not None:
         primary_summary["multi_seed_analysis"] = multi_seed_stats
 
-        # Save training history of primary seed
+        # Save training history of primary validation-selected seed
         history_csv = out_dir / "cnn_history.csv"
         primary_summary["history_df"].to_csv(history_csv, index=False)
 
@@ -619,10 +624,12 @@ def run_cnn_multiseed_validation(
         if save_json:
             metrics_json = out_dir / "cnn_metrics.json"
             clean_json = {
+                "selected_seed": primary_summary["selected_seed"],
                 "model_parameters": primary_summary["model_parameters"],
                 "epochs": primary_summary["epochs"],
                 "cpu_threads": primary_summary["cpu_threads"],
                 "training_time_seconds": primary_summary["training_time_seconds"],
+                "best_val_accuracy": primary_summary["best_val_accuracy"],
                 "optimal_classical_threshold": primary_summary["optimal_classical_threshold"],
                 "classical_baseline": primary_summary["classical_baseline"],
                 "tiny_cnn": primary_summary["tiny_cnn"],
@@ -664,10 +671,10 @@ def run_cnn_experiment(
 
     print("-" * 72)
     print(f"Classical (MAD) Accuracy: {summary['classical_baseline']['accuracy']:.2f}%")
-    print(f"Tiny CNN Accuracy (Seed 42): {summary['tiny_cnn']['accuracy']:.2f}%")
+    print(f"Tiny CNN Accuracy (Seed {summary.get('selected_seed', 202)}): {summary['tiny_cnn']['accuracy']:.2f}%")
     print(f"Tiny CNN Multi-Seed Mean: {multiseed_results['cnn_accuracy_mean']:.2f}% +/- {multiseed_results['cnn_accuracy_std']:.2f}%")
     print(f"Paired Difference Mean:   {multiseed_results['acc_diff_mean']:+.2f}% +/- {multiseed_results['acc_diff_std']:.2f}%")
-    print(f"Median McNemar p-value:   {multiseed_results['median_mcnemar_pvalue']:.4f}")
+    print(f"Primary Model McNemar p-value: {multiseed_results['primary_model_mcnemar_pvalue']:.4f}")
     print("=" * 72)
 
     return summary

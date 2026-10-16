@@ -1,99 +1,108 @@
 # Playing with Stereo Matching
 
-*A minimal, reproducible research notebook exploring classical stereo correspondence, CPU performance optimization, patch-level convolutional learning, and cross-dataset metric depth transfer.*
+A numerical and experimental research notebook exploring classical block matching, semi-global matching (SGBM), CPU throughput optimization, metric depth triangulation, and patch correspondence learning.
 
 ![Stereo correspondence across presets and volcanic terrains](assets/stereo_loop.gif)
 
-## Overview and Mission
+---
 
-Estimating metric 3D depth from two 2D images is a cornerstone of computational imaging and robotics. When two rectified cameras view a scene from slightly separated vantage points, objects displace horizontally across the two views by an amount inversely proportional to their distance. Nearby objects displace by many pixels; distant objects displace by few pixels.
+## 1. What I Explored
 
-Modern computer vision frequently defaults to deep transformer architectures containing hundreds of millions of parameters. However, on embedded micro-aerial vehicles, field rovers, and real-time inspection hardware, dense GPU networks are often impractical due to thermal, latency, and power constraints.
+Estimating metric 3D depth from two calibrated 2D images is a fundamental problem in computational imaging and robotics. When two cameras observe a scene from horizontally separated optical centers, objects displace across views inversely proportional to their physical distance. Close objects displace by many pixels; distant objects displace by few pixels.
 
-This notebook documents a three-level investigation into stereo matching:
-1. **Educational Core:** Pinhole triangulation, synthetic scenes with known ground truth, local block matching ([`StereoBM`](file:///d:/03_Proyek/SGBM%20Research/stereo.py#L70-L100)), semi-global matching ([`StereoSGBM`](file:///d:/03_Proyek/SGBM%20Research/stereo.py#L102-L138)), photometric robustness, and an educational 1,054-parameter CNN patch classifier ([`TinyStereoNet`](file:///d:/03_Proyek/SGBM%20Research/cnn.py#L26-L52)) with multi-seed statistical testing.
-2. **Standard Benchmark and CPU Optimization:** Middlebury 2014 evaluation across 15 high-resolution indoor scenes, post-processing filter ablations with completeness-aware metrics, and a multi-threaded CPU Pareto frontier yielding FAST (28.8 FPS), BALANCED (13.5 FPS), and QUALITY (2.95 FPS) presets.
-3. **Field Transfer and Real-World Metric Ground Truth:** Transfer of the calibrated pipeline to four outdoor volcanic terrains on Mount Tangkuban Parahu, Indonesia (`puncakTinggi`, `puncakWarung`, `tanggaBiru`, `tanggaKuning`) with sub-pixel camera calibration and independently registered Intel RealSense D435i active IR depth ground truth.
+While modern vision often turns to GPU-heavy transformer models with tens of millions of parameters, field rovers, micro-aerial vehicles, and embedded inspection hardware frequently operate under tight thermal and compute budgets where only CPU execution is practical.
+
+This notebook investigates stereo correspondence across four linked layers:
+
+1. **Theoretical Triangulation and Sensitivity:** Mathematical formulation of rectified epipolar geometry, quadratic depth error scaling, local Sum of Absolute Differences (SAD), and Semi-Global Block Matching (SGBM) energy minimization.
+2. **Controlled Synthetic Benchmarking:** Procedural planar and layered depth scenes with geometric occlusion masks evaluated under controlled photometric noise, contrast, brightness, and gamma perturbations.
+3. **Standard Benchmark and CPU Optimization:** Middlebury 2014 evaluation across 15 public training scenes, completeness-aware error metrics, post-processing filter ablations, and an audited CPU Pareto frontier (FAST, BALANCED, and QUALITY presets).
+4. **Outdoor Volcanic Field Deployment:** Calibrated pipeline transfer to four natural terrains on Mount Tangkuban Parahu, Indonesia, registered against co-mounted active IR depth ground truth.
+5. **Minimal Learned Patch Classifier:** A 1,054-parameter convolutional network ([`TinyStereoNet`](cnn.py)) evaluated on held-out test patches against hand-crafted Mean Absolute Difference (MAD) via confirmatory hypothesis testing.
 
 ---
 
-## 1. Mathematical Principles of Stereo Triangulation and Sensitivity
+## 2. Stereo Geometry and Disparity
 
-Consider two pinhole cameras mounted on a horizontal baseline $B$ with matching focal lengths $f$ (in pixels) and identical optical axes pointing perpendicular to the baseline.
+Consider two pinhole cameras mounted on a rigid horizontal baseline $B$ with matching focal length $f$ (in pixels) and identical optical axes pointing perpendicular to the baseline.
 
 ![Rectified stereo camera geometry and triangulation](assets/fig01_stereo_geometry.png)
 *Figure 1: Rectified epipolar stereo camera geometry, synthetic layered scene with geometric occlusions, and educational scanline SAD cost surface. [Vector PDF](assets/fig01_stereo_geometry.pdf)*
 
-Because the cameras are rectified to lie in the same epipolar plane, any 3D scene point $P(X, Y, Z)$ projects to the identical vertical row in both camera frames:
+### Mathematical Formulation of Triangulation
+
+Because the optical centers share the identical epipolar plane, scene point $P(X, Y, Z)$ projects to the same vertical row in both camera frames:
 
 $$y_L = y_R$$
 
-The horizontal coordinates differ by the displacement between the two optical centers:
+The horizontal coordinates differ by the baseline displacement $B$:
 
 $$x_L = f \frac{X}{Z} + c_x, \qquad x_R = f \frac{X - B}{Z} + c_x$$
 
-Subtracting horizontal coordinates defines the stereo disparity $d$:
+Subtracting horizontal coordinates defines stereo disparity $d$:
 
 $$d = x_L - x_R = \frac{f \cdot B}{Z}$$
 
-Inverting this relation yields physical metric depth in meters:
+Inverting disparity yields metric physical depth in meters:
 
 $$Z = \frac{f \cdot B}{d}$$
 
-When a camera calibration introduces a horizontal disparity offset $\mathrm{doffs}$ (as in Middlebury datasets), the triangulation relation generalizes to:
+When camera calibration introduces a horizontal disparity offset $\mathrm{doffs}$ (such as in Middlebury calibration conventions), triangulation generalizes to:
 
 $$Z = \frac{f \cdot B}{d + \mathrm{doffs}}$$
 
-### Depth Sensitivity and Physics Scaling
+### Depth Error Sensitivity and Quadratic Scaling
 
-Differentiating metric depth $Z$ with respect to disparity $d$ yields the first-order depth sensitivity:
+Differentiating metric depth $Z$ with respect to disparity $d$ reveals how disparity errors propagate into physical depth uncertainty:
 
 $$\frac{\partial Z}{\partial d} = -\frac{f \cdot B}{d^2} = -\frac{Z^2}{f \cdot B}$$
 
-Thus, depth uncertainty $|\Delta Z|$ scales quadratically with true distance $Z$:
+First-order depth error $|\Delta Z|$ scales quadratically with true distance $Z$:
 
 $$|\Delta Z| \approx \frac{Z^2}{f \cdot B} |\Delta d|$$
 
-For our Logitech field rig ($f = 964.68$ px, $B = 0.0975$ m, $f \cdot B = 94.054$ px*m):
+For our Logitech field camera rig ($f = 964.68$ px, $B = 0.0975$ m, $f \cdot B = 94.054$ px$\cdot$m):
 - At $Z = 1.0$ m: a 1.0 px disparity error produces $|\Delta Z| \approx 0.0106$ m (1.1 cm).
-- At $Z = 3.0$ m: a 1.0 px error produces $|\Delta Z| \approx 0.0957$ m (9.6 cm).
-- At $Z = 10.0$ m: a 1.0 px error produces $|\Delta Z| \approx 1.063$ m (106.3 cm).
+- At $Z = 3.0$ m: a 1.0 px disparity error produces $|\Delta Z| \approx 0.0957$ m (9.6 cm).
+- At $Z = 10.0$ m: a 1.0 px disparity error produces $|\Delta Z| \approx 1.063$ m (106.3 cm).
 
-Due to non-linear inversion, underestimating disparity produces substantially larger depth errors than overestimating disparity by the identical margin:
+Due to hyperbolic inversion, underestimating disparity produces substantially larger depth errors than overestimating disparity by the same margin:
 
 $$\Delta Z_{\mathrm{farther}} = \frac{f \cdot B}{d - \Delta d} - Z > Z - \frac{f \cdot B}{d + \Delta d} = \Delta Z_{\mathrm{closer}}$$
 
 ### Local Matching Cost (SAD)
 
-For a reference pixel $(x_L, y)$ in the left image, candidate correspondences along the right scanline are evaluated over a local window of size $K \times K$ using the Sum of Absolute Differences:
+For a reference pixel $(x_L, y)$ in the left image, candidate matches along the right epipolar scanline are scored over a local window of size $K \times K$ using the Sum of Absolute Differences:
 
 $$\mathrm{SAD}(d) = \sum_{u=-k}^k \sum_{v=-k}^k |I_L(x_L + u, y + v) - I_R(x_L - d + u, y + v)|$$
 
-where $k = (K - 1) / 2$. On textured surfaces, the cost drops to a clean minimum at the true disparity. On flat surfaces or repetitive patterns, the cost curve flattens, producing ambiguity.
+where $k = (K - 1) / 2$. As illustrated in Figure 1(e), the SAD cost curve drops sharply to a clear global minimum on textured surfaces. On textureless regions, the curve flattens, creating aperture ambiguity.
 
-### Semi-Global Block Matching (StereoSGBM)
+### Semi-Global Matching (StereoSGBM)
 
-Local block matching minimizes SAD independently per window, suffering from edge fattening and aperture ambiguity. StereoSGBM resolves this by optimizing a 2D energy functional across the whole image:
+Local block matching minimizes SAD independently per window, making it prone to edge-fattening artifacts and aperture ambiguity. StereoSGBM resolves this by optimizing a global 2D energy functional across the entire image:
 
 $$E(D) = \sum_p C(p, D_p) + \sum_{q \in N_p} P_1 \cdot \mathbb{I}[|D_p - D_q| = 1] + \sum_{q \in N_p} P_2 \cdot \mathbb{I}[|D_p - D_q| > 1]$$
 
-where $C(p, D_p)$ is the Birchfield-Tomasi sampling cost, $P_1$ penalizes smooth gradient shifts, and $P_2$ penalizes sharp depth jumps. SGBM minimizes this functional by aggregating 1D dynamic programming paths along 3, 5, or 8 cardinal directions.
+where $C(p, D_p)$ is the Birchfield-Tomasi sampling-insensitive matching cost, $P_1$ penalizes small disparity steps (slanting surfaces), and $P_2$ penalizes large disparity jumps (depth discontinuities). SGBM minimizes this functional by aggregating 1D dynamic programming costs along cardinal scanline directions.
 
 ---
 
-## 2. Level 1: Synthetic Benchmarking and Tiny CNN
+## 3. Synthetic Stereo Experiments
 
-To establish ground-truth bounds under controlled conditions, I built two procedural synthetic scenes ($320 \times 240$ pixels):
-1. **Planar Constant Disparity:** A smooth, textured surface shifted by an exact integer offset ($d = 16$ px).
-2. **Layered 3-Depth Geometry:** Background ($d = 8$ px), middleground ($d = 18$ px) with an untextured flat zone, and a foreground object ($d = 32$ px). Occluded pixels are tracked geometrically and masked out during evaluation.
+To evaluate matching precision where ground truth is known exactly, I constructed two procedural synthetic test scenes ($320 \times 240$ pixels):
+1. **Constant Disparity Scene:** A textured planar surface translated by a known integer offset ($d = 16.0$ px).
+2. **Layered Scene:** Three distinct depth planes (background $d = 8$ px, middleground $d = 18$ px, foreground $d = 32$ px) with half-occluded pixels geometrically masked out.
 
-### Baseline Reconstruction and Photometric Robustness
+### Photometric Perturbation Benchmark
+
+Both scenes were evaluated under five photometric perturbations: additive Gaussian noise ($\sigma = 15$), brightness shifts ($\pm 30$), contrast reduction ($0.5\times$), and non-linear gamma warping ($\gamma = 1.6$).
 
 ```text
-Table 1: Synthetic Benchmark Performance Across Perturbations (Bad@2.0% and Valid Coverage%)
+Table 1: Synthetic Benchmark Performance Across Matchers and Perturbations
 ```
 
-| Scene and Perturbation | StereoBM Bad@2 | StereoBM Cov | StereoSGBM Bad@2 | StereoSGBM Cov | SGBM Latency |
+| Scene & Perturbation | StereoBM Bad@2 | StereoBM Cov | StereoSGBM Bad@2 | StereoSGBM Cov | SGBM Latency |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Constant (Clean)** | 0.00% | 84.2% | **0.00%** | **84.2%** | 4.91 ms |
 | **Constant (Noise $\sigma=15$)** | 0.01% | 84.2% | **0.01%** | **84.2%** | 5.03 ms |
@@ -104,54 +113,25 @@ Table 1: Synthetic Benchmark Performance Across Perturbations (Bad@2.0% and Vali
 | **Layered (Noise $\sigma=15$)** | 9.72% | 12.9% | **6.02%** | **81.0%** | 12.45 ms |
 | **Layered (Gamma $\gamma=1.6$)** | 3.05% | 76.2% | **1.76%** | **85.2%** | 15.66 ms |
 
-Under clean conditions, SGBM achieves a 2.03% bad-pixel rate on the layered scene. Under additive Gaussian noise ($\sigma = 15$), StereoBM coverage collapses from 77.6% to 12.9%, while SGBM maintains 81.0% coverage with 6.02% error due to directional energy aggregation.
-
-### TinyStereoNet: Multi-Seed Statistical Validation
-
-To investigate what a minimal learned model discovers about correspondence, I implemented [`TinyStereoNet`](file:///d:/03_Proyek/SGBM%20Research/cnn.py#L26-L52), a 2-layer CNN running entirely on CPU:
-- Input: Two $15 \times 15$ grayscale patches stacked along channels ($2 \times 15 \times 15$).
-- Architecture:
-  - Conv1: $2 \to 8$ channels, $3 \times 3$, ReLU (152 params)
-  - Conv2: $8 \to 12$ channels, $3 \times 3$, ReLU (876 params)
-  - Global Average Pooling: $12 \times 11 \times 11 \to 12$
-  - Linear Classifier: $12 \to 2$ logits (26 params)
-  - Total: **1,054 trainable parameters**
-
-![TinyStereoNet patch correspondence classifier](assets/fig06_cnn.png)
-*Figure 6: TinyStereoNet patch classifier: training dynamics, held-out test generalization against classical Mean Absolute Difference (MAD) with full 0-100% axis and multi-seed error bars, and learned Conv1 filter kernels. [Vector PDF](assets/fig06_cnn.pdf)*
-
-To prevent data leakage, training (1,000 pairs), validation (200 pairs), and test (246 pairs) sets were generated using mutually disjoint scene seeds. Model selection was performed on validation accuracy; test data was evaluated only once.
-
-```text
-Table 2: Patch Correspondence Classification on Untouched Held-Out Test Data
-```
-
-| Method | Test Accuracy | Precision | Recall | F1 Score | CPU Latency / Patch | Parameters |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Classical Baseline (MAD)** | 91.06% | 87.97% | 95.12% | 91.41% | **0.001 ms** | **0 (hand-designed)** |
-| **TinyStereoNet (Seed 42)** | 94.31% | 92.91% | 95.93% | 94.40% | 0.044 ms | 1,054 |
-| **TinyStereoNet (5 Seeds)** | **95.53% $\pm$ 0.70%** | **94.8% $\pm$ 1.1%** | **96.4% $\pm$ 0.8%** | **95.6% $\pm$ 0.7%** | 0.044 ms | 1,054 |
-
-To resolve whether TinyStereoNet significantly outperforms the classical baseline beyond random initialization variance, training was replicated across five deterministic seeds (`[42, 101, 202, 303, 404]`):
-- Mean accuracy difference: **+4.47% $\pm$ 0.70%** over MAD.
-- Paired McNemar exact test: **$p = 0.0042$** (median across seeds; all $p \le 0.0215$), confirming statistically significant superiority ($p < 0.01$).
-- Bootstrap 95% confidence interval for accuracy difference: $[+1.63\%, +6.91\%]$.
-- Training time averaged **5.2 seconds** on CPU.
+Under clean conditions, SGBM recovers layered disparities with a 2.03% bad-pixel rate (pixels where $|d_{\mathrm{pred}} - d_{\mathrm{gt}}| > 2.0$ px). Under additive Gaussian noise ($\sigma = 15$), local StereoBM coverage collapses from 77.6% to 12.9% because window SAD costs fail confidence checks. In contrast, SGBM maintains 81.0% coverage with 6.02% bad-pixel error, demonstrating the stabilizing effect of directional dynamic programming paths.
 
 ---
 
-## 3. Level 2: Middlebury 2014 and CPU Optimization
+## 4. Middlebury 2014 Evaluation
 
-The pipeline was evaluated across 15 publicly available training scenes from the Middlebury 2014 benchmark (MiddEval3) under non-occluded evaluation masks (`mask0nocc.png`). Note that this is an internal offline evaluation on public training scenes, not an official Middlebury benchmark submission.
+The pipeline was benchmarked across 15 publicly available labeled training scenes from the Middlebury 2014 dataset (MiddEval3) using subpixel ground-truth PFM disparities under non-occluded evaluation masks (`mask0nocc.png`).
+
+> [!NOTE]
+> Middlebury evaluations presented here are offline research evaluations on public labeled training scenes at 0.5x scale, not an official benchmark submission to the Middlebury evaluation server.
 
 ![Middlebury 2014 benchmark evaluation](assets/fig02_middlebury.png)
 *Figure 2: Middlebury 2014 benchmark evaluation on Jadeplant at 0.5x scale. Panels show left view, reference disparity from PFM, non-occluded mask, raw SGBM, WLS filtered SGBM, and spatial error map. [Vector PDF](assets/fig02_middlebury.pdf)*
 
 ```text
-Table 3: Middlebury 2014 Benchmark Results Across 15 Scenes (0.5x Scale)
+Table 2: Middlebury 2014 Benchmark Results Across 15 Scenes (0.5x Scale)
 ```
 
-| Scene | Disparity Range | Bad@2.0 Error (%) | Disp MAE (px) | Depth MAE (m) | Valid Coverage (%) | CPU Latency (ms) |
+| Scene | Disparity Range | Bad@2.0 (%) | Disp MAE (px) | Depth MAE (m) | Coverage (%) | CPU Latency (ms) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Adirondack** | 73 px | **9.26%** | 1.54 px | 0.039 m | 87.9% | 11.21 ms |
 | **ArtL** | 64 px | 26.10% | 3.07 px | 0.072 m | 78.5% | 1.78 ms |
@@ -168,32 +148,32 @@ Table 3: Middlebury 2014 Benchmark Results Across 15 Scenes (0.5x Scale)
 | **Shelves** | 60 px | 27.17% | 2.42 px | 0.090 m | 89.6% | 18.26 ms |
 | **Teddy** | 64 px | **9.66%** | 1.04 px | 0.016 m | 90.6% | 4.23 ms |
 | **Vintage** | 190 px | 22.85% | 2.83 px | 0.042 m | 73.8% | 15.02 ms |
-| **Macro Average** | **81 px** | **16.63%** | **2.65 px** | **0.076 m** | **83.7%** | **14.15 ms** |
+| **Macro Average** | **81 px** | **16.63%** | **2.57 px** | **0.078 m** | **83.7%** | **14.15 ms** |
 
 Across all 15 scenes at 0.5x scale:
-- Mean conditional Bad@2.0 error: **16.63%**
-- Mean valid prediction coverage: **83.70%**
-- Mean completeness-aware Bad@2.0: **29.74%**
-- Mean depth triangulation error: **7.6 cm** in **14.15 ms** average latency.
+- Macro average Bad@2.0 error: **16.63%**
+- Mean valid prediction coverage: **83.67%**
+- Completeness-aware Bad@2.0 error: **29.88%**
+- Mean depth triangulation error: **7.8 cm** ($0.078$ m) at an average CPU latency of **14.15 ms**.
 
 At native 1.0x resolution on the Jadeplant reference scene:
-- Bad@2.0 error drops to **11.42%** (matching the filter ablation and block size sweep in `results/optimization.csv`), depth MAE is **3.48 cm**, and latency is **47.62 ms**.
+- Bad@2.0 error drops to **11.42%**, depth MAE is **3.48 cm**, and matching latency is **47.62 ms**.
 
 ### Post-Processing Filter Ablation: Accuracy Versus Completeness
 
-Using the Jadeplant reference scene, six post-processing strategies were evaluated under identical inputs:
-- `raw`: Unfiltered SGBM.
-- `median_valid`: 3x3 median blur restricted to valid pixels.
-- `guided`: Guided filter using grayscale left image as structural guide.
+To understand whether sophisticated post-processing filters improve matching, six filtering strategies were tested on Jadeplant (1.0x scale):
+- `raw`: Unfiltered StereoSGBM output.
+- `median_valid`: $3 \times 3$ median filter applied strictly over valid disparity pixels.
+- `guided`: Guided image filter using the grayscale left view as structural guide.
 - `joint_bilateral`: Color joint bilateral edge-preserving smoothing.
 - `wls`: Weighted Least Squares disparity filter using left-right consistency.
-- `confidence_edge`: WLS with confidence-map thresholding to suppress uncertain matches.
+- `confidence_edge`: WLS disparity filter with edge confidence thresholding.
 
 ![Filter ablation and parameter sensitivity](assets/fig04_optimization.png)
 *Figure 4: Stereo filter ablation and parameter sensitivity. (a) Bad@2.0 conditional error, completeness-aware error, and total latency across filters. (b) Disparity accuracy versus runtime across SGBM block sizes. [Vector PDF](assets/fig04_optimization.pdf)*
 
 ```text
-Table 4: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x Scale)
+Table 3: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x Scale)
 ```
 
 | Filter Mode | Bad@2.0 Cond (%) | Bad@2.0 CA (%) | Valid Coverage (%) | Match Latency | Filter Latency | Total Latency |
@@ -205,92 +185,155 @@ Table 4: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x 
 | **wls** | 26.89% | 41.90% | 79.46% | 84.8 ms | 26.6 ms | 111.4 ms |
 | **confidence_edge** | **4.41%** | **60.73%** | **41.08%** | 84.8 ms | 28.9 ms | 113.6 ms |
 
-#### Key Scientific Findings on Post-Processing:
-1. **The Conditional Accuracy Fallacy (Finding A):** `confidence_edge` appears superior if judged solely by conditional Bad@2 (4.41%). However, it discards 58.9% of evaluable pixels. Its completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}} = 1 - \mathrm{Cov} + \mathrm{Cov} \cdot \mathrm{Bad}_{\mathrm{valid}}$) is **60.73%**, far worse than raw SGBM (38.64%).
-2. **Negative Finding on WLS Filtering (Finding B):** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This doubles matching latency from 42.5 ms to 84.8 ms and adds 26.6 ms filter overhead (total 111.4 ms). More critically, WLS blurs depth discontinuities on this scene, increasing conditional Bad@2 from 11.42% to 26.89%.
-3. **Median Valid is Pareto-Optimal:** `median_valid` cleans isolated disparity spikes while preserving valid masks without sentinel bleeding, adding only 4.6 ms overhead.
+#### Key Insights on Post-Processing:
+1. **The Conditional Accuracy Fallacy:** `confidence_edge` appears superior if judged strictly by conditional Bad@2 (4.41%). However, it rejects 58.9% of evaluable pixels. Its completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}} = 1 - \mathrm{Cov} + \mathrm{Cov} \cdot \mathrm{Bad}_{\mathrm{valid}}$) jumps to **60.73%**, far worse than raw SGBM (38.64%).
+2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This doubles matching latency from 42.5 ms to 84.8 ms and adds 26.6 ms filter overhead (total 111.4 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%.
+3. **Median Valid is Pareto-Optimal:** `median_valid` cleans isolated disparity spikes while preserving valid masks without sentinel bleeding, adding only 4.6 ms filter overhead.
 
-### CPU Optimization and Pareto Frontier
+---
+
+## 5. CPU Optimization and FAST/BALANCED/QUALITY
 
 ![CPU Pareto frontier and multi-threading scaling](assets/fig05_cpu_pareto.png)
 *Figure 5: CPU optimization analysis. (a) Measured latency versus error Pareto frontier for FAST, BALANCED, and QUALITY presets. (b) Multi-threading speedup curves at 360p resolution. [Vector PDF](assets/fig05_cpu_pareto.pdf)*
 
+### Algorithmic Levers on CPU
+
+1. **Resolution Scaling (Dominant Lever):** Scaling 720p input down to 360p ($0.5\times$) yields a **$6.2\times$ speedup** (41.4 ms vs 133 ms). At 180p ($0.25\times$), SGBM exceeds 130 FPS on CPU.
+2. **Block Size Sensitivity:** In a 15-configuration search, block size 5 strictly dominated block size 7 across all metrics: it executes over $2\times$ faster (133 ms vs 338 ms) and achieves lower error (9.97% vs 11.42%) due to reduced window-over-smoothing at sharp depth boundaries.
+3. **Thread Scaling:** Multi-threading scales effectively up to 8 threads, with diminishing returns beyond 8 threads due to CPU cache and memory bandwidth saturation.
+
 ```text
-Table 5: Measured Pipeline Presets on 720p Input Images
+Table 4: Measured Pipeline Presets on 720p Input Images
 ```
 
-| Preset | Scale Factor | Disparities | Block Size | Post-Filter | Pipeline Latency | Measured FPS | Reference Bad@2.0 |
+| Preset | Scale Factor | Disparities | Block Size | Post-Filter | Pipeline Latency | Measured FPS | Jadeplant Bad@2 (Cond / CA) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FAST** | $0.5\times$ (360p) | 80 px | 5 px | `median_valid` | **34.7 ms** | **28.8 FPS** | 23.5% |
-| **BALANCED** | $0.5\times$ (360p) | 80 px | 5 px | `median_valid` | 74.2 ms | 13.5 FPS | 23.5% |
-| **QUALITY** | $1.0\times$ (720p) | 160 px | 7 px | `median_valid` | 338.8 ms | 2.95 FPS | **11.4%** |
+| **FAST** | $0.5\times$ (360p) | 80 px | 5 px | `median_valid` | 41.4 – 79.5 ms | 12.6 – 24.2 FPS | 21.6% / 46.1% |
+| **BALANCED** | $0.75\times$ (540p) | 128 px | 5 px | `median_valid` | 81.1 – 178.9 ms | 5.6 – 12.3 FPS | 16.3% / 43.8% |
+| **QUALITY** | $1.0\times$ (720p) | 160 px | 5 px | `median_valid` | 133.0 – 491.5 ms | 2.0 – 7.5 FPS | **10.0% / 37.1%** |
 
-Resolution scaling provides the largest throughput gain: downscaling 720p ($1280 \times 720$, 208.4 ms matching) to 360p ($640 \times 360$, 33.5 ms) delivers a **$6.2\times$ speedup**, while 180p achieves **130.8 FPS** (7.6 ms). Multi-threading at 360p scales effectively up to 8 threads (76.6 ms on 1 thread down to 32.0 ms on 8 threads), with diminishing returns at 16 threads (30.4 ms) due to CPU cache saturation.
+These three presets form a strictly monotonic Pareto frontier balancing latency and reconstruction fidelity on standard multi-core CPUs.
 
 ---
 
-## 4. Level 3: Gunung Field Transfer and RealSense Ground Truth
+## 6. Field Evaluation Across Four Gunung Terrains
 
-To test classical stereo outside controlled laboratory settings, the calibrated pipeline was deployed across four outdoor volcanic terrains on Mount Tangkuban Parahu, Indonesia:
-1. `puncakTinggi`: High-altitude volcanic ridge with rough basalt rock and direct sunlight.
-2. `puncakWarung`: Open roadside stall with corrugated tin roofing and deep shadow occlusions.
-3. `tanggaBiru`: Steep trail stairway with painted blue steel safety railings.
+To evaluate classical stereo outside laboratory environments, the calibrated pipeline was deployed across four volcanic terrains on Mount Tangkuban Parahu, Indonesia:
+1. `puncakTinggi`: High-altitude ridge with gravel, rough basalt rock, and direct sun.
+2. `puncakWarung`: Roadside stall area with corrugated tin roofing and deep shadow occlusions.
+3. `tanggaBiru`: Steep trail stairway bounded by painted blue steel railings.
 4. `tanggaKuning`: Natural soil and stone steps bounded by painted yellow railings.
 
 ![Four Gunung volcanic terrains evaluation](assets/fig03_gunung.png)
 *Figure 3: Four Gunung volcanic terrains evaluated under calibrated stereo and active IR RealSense ground truth. [Vector PDF](assets/fig03_gunung.pdf)*
 
-### Sensor Setup and Registration Protocol
+### Sensor Configuration and Registration
 
-- **Primary Stereo Rig:** Dual calibrated cameras ($1280 \times 720$, baseline $B = 97.50$ mm, focal length $f_x = 964.68$ px, $f \cdot B = 94.054$ px*m).
-- **Metric Ground Truth:** Co-mounted Intel RealSense D435i active IR stereo depth sensor ($640 \times 480$ native depth).
-- **Extrinsic Registration:** 3D points unprojected from RealSense depth via $K_{\mathrm{rs}}$ were matched to 2D SIFT features in the rectified stereo left view. Rigid translation $T$ and rotation $R$ were solved via PnP RANSAC ($3.0$ px reprojection threshold).
-- **Z-Buffered Forward Projection:** RealSense depth was projected into the $1280 \times 720$ stereo left coordinate frame using z-buffering (closer points overwrite farther points).
+- **Stereo Rig:** Dual calibrated cameras ($1280 \times 720$, baseline $B = 97.50$ mm, focal length $f_x = 964.68$ px, $f \cdot B = 94.054$ px$\cdot$m).
+- **Metric Ground Truth:** Co-mounted Intel RealSense D435i active IR stereo sensor ($640 \times 480$ native depth).
+- **Registration Protocol:** 3D points unprojected from RealSense depth via $K_{\mathrm{rs}}$ were matched to 2D SIFT features in the rectified stereo left view. Rigid translation $T$ and rotation $R$ were solved via PnP RANSAC ($3.0$ px reprojection threshold).
+- **Z-Buffered Projection:** RealSense depth was projected into the $1280 \times 720$ stereo frame using depth-based z-buffering.
 
 ```text
-Table 6: RealSense Registration and Metric Depth Validation Across Terrains
+Table 5: RealSense Registration and Metric Depth Validation Across Terrains
 ```
 
-| Terrain | Status | SIFT Inliers | Reproj Med (px) | Translation $T$ (m) | Eval Pixels | Depth MAE (m) | Depth Med (m) | $\delta < 1.25$ (%) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **puncakTinggi** | **VERIFIED** | 106 | 1.25 px | $[-0.011, -0.035, -0.000]$ | 76,980 | 0.234 m | **0.059 m** | **88.4%** |
-| **puncakWarung** | **OUT_OF_RANGE**| 0 | N/A | N/A | 0 | Unmeasured | Unmeasured | N/A |
-| **tanggaBiru** | **VERIFIED** | 77 | 0.73 px | $[-0.026, -0.044, -0.030]$ | 13,759 | 0.500 m | **0.076 m** | 70.5% |
-| **tanggaKuning** | **VERIFIED** | 32 | 1.19 px | $[-0.017, -0.034, -0.013]$ | 38,613 | 0.211 m | **0.061 m** | **88.2%** |
+| Terrain | Status | SIFT Inliers | Reproj Med (px) | Translation $T$ (m) | Eval Pixels | Ref Cov (%) | Frame Cov (%) | Depth MAE (m) | Depth Med (m) | $\delta < 1.25$ (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **puncakTinggi** | **VERIFIED** | 106 | 1.25 px | $[-0.011, -0.035, -0.000]$ | 76,980 | 41.7% | 8.35% | 0.234 m | **0.059 m** | **88.4%** |
+| **puncakWarung** | **OUT_OF_RANGE**| 0 | N/A | N/A | 0 | 0.0% | 0.00% | Unmeasured | Unmeasured | N/A |
+| **tanggaBiru** | **VERIFIED** | 77 | 0.73 px | $[-0.026, -0.044, -0.030]$ | 13,759 | 12.7% | 1.49% | 0.500 m | **0.076 m** | 70.5% |
+| **tanggaKuning** | **VERIFIED** | 32 | 1.19 px | $[-0.017, -0.034, -0.013]$ | 38,613 | 28.6% | 4.19% | 0.211 m | **0.061 m** | **88.2%** |
 
-### Honest Reporting on Far-Field Geometry
+### Mechanical Rig Stability and Extrinsic Transfer
 
-In `puncakWarung`, scene geometry exceeds 15 meters. The Intel RealSense D435i active IR emitter has an effective range of 0.3 to 6.0 meters in daylight; beyond 10 meters, active IR returns vanish. Consequently, 2D-3D SIFT consensus cannot be established.
+Transferring camera extrinsics $(R, T)$ solved on `puncakTinggi` directly to `tanggaBiru` resulted in an accuracy breakdown: median depth error increased from 0.076 m to 0.181 m, and reprojection residuals climbed to 56.5 px.
 
-Rather than interpolating or fabricating false ground truth, `puncakWarung` is explicitly reported as `OUT_OF_RANGE`. StereoSGBM successfully reconstructs the scene, but quantitative depth error against RealSense is honestly reported as unmeasured.
+Geometric analysis identified two root causes:
+1. **Mechanical Rig Flexure Between Sessions:** Pairwise rotation differences across terrains range from $2.6^\circ$ to $4.7^\circ$, and translation shifts vary by 1.5 cm to 3.5 cm. The tripod bracket underwent physical micro-shifts during transport between field sites.
+2. **Geometric Degeneracy in `tanggaBiru`:** SIFT inliers in `tanggaBiru` clustered along a single linear steel railing ($Y$-spread standard deviation of only 9 mm). A collinear feature distribution creates an ill-conditioned PnP null space, rendering extrinsic transfer unreliable.
 
-Across the three valid near-field terrains, classical SGBM achieves median metric depth errors of **5.9 cm** (`puncakTinggi`), **7.6 cm** (`tanggaBiru`), and **6.1 cm** (`tanggaKuning`). Over 88% of evaluated surface points fall within 25% of true distance ($\delta < 1.25$).
+> [!IMPORTANT]
+> **Coverage Caveat:** While median depth errors on valid points are 5.9–7.6 cm, the jointly evaluable region constitutes only **1.49% to 8.35% of the full 720p image frame** (due to RealSense active IR sunlight wash-out, FOV disparity, and occlusion boundaries). RealSense comparisons must be understood as *provisional local spot checks*, not full-field dense ground truth.
 
----
+### Far-Field Geometry (`puncakWarung`)
 
-## 5. Cross-Dataset Generalization
+In `puncakWarung`, scene geometry exceeds 15 meters (all detected SIFT keypoints have depths $Z > 15.6$ m). The Intel RealSense D435i active IR emitter operates up to 3–6 meters in daylight; beyond 10 meters, active IR returns drop to zero. StereoSGBM successfully reconstructs the scene, but depth error against RealSense is documented honestly as unmeasured.
+
+Across the three valid near-field terrains, classical SGBM achieves median metric depth errors of **5.9 cm** (`puncakTinggi`), **7.6 cm** (`tanggaBiru`), and **6.1 cm** (`tanggaKuning`), with over 88% of evaluated surface points within 25% of true distance ($\delta < 1.25$).
+
+### Cross-Dataset Generalization
 
 ![Cross-dataset generalization comparison](assets/fig07_cross_dataset.png)
 *Figure 7: Cross-dataset generalization. Row A shows Middlebury indoor benchmark scene (Jadeplant). Row B shows outdoor volcanic terrain (puncakTinggi) evaluated against registered RealSense metric depth. [Vector PDF](assets/fig07_cross_dataset.pdf)*
 
-Classical stereo matching requires no domain-specific training:
-- In indoor scenes with high-frequency plant textures and complex depth layers (Row A), SGBM recovers geometric boundaries with 7.01 px disparity MAE (0.066 m depth MAE at 0.5x scale).
+Classical stereo matching requires no domain retraining:
+- In indoor scenes with high-frequency plant foliage and complex occlusions (Row A), SGBM recovers depth boundaries with 7.01 px disparity MAE (0.066 m depth MAE at 0.5x scale).
 - In outdoor volcanic scenes with rocky gravel, boulders, and harsh shadows (Row B), the same algorithm with calibrated parameters yields 5.89 cm median depth error.
 
 ---
 
-## 6. What I Learned
+## 7. TinyStereoNet CNN
 
-1. **Geometry precedes matching:** Correct epipolar rectification ($y_L = y_R$) is a strict physical prerequisite. Sub-pixel calibration errors cannot be corrected by downstream filters or loss functions.
-2. **Completeness matters as much as conditional accuracy:** Optimizing conditional error on valid predictions while dropping 60% to 85% of pixels creates misleading benchmarks. Completeness-aware error must be reported.
-3. **Heavy post-processing can hurt:** WLS disparity filtering adds dual-pass matching overhead and can blur depth discontinuities, underperforming simpler validity-aware median blur on CPU.
-4. **Scale is the primary CPU lever:** Downscaling image resolution by $0.5\times$ yields a $6.2\times$ matching speedup, enabling real-time operation (28.8 FPS) on commodity CPU hardware.
-5. **Small networks can learn spatial features:** A 1,054-parameter CNN achieves 95.5% accuracy on held-out test patches across 5 random seeds ($p = 0.0042$ vs classical MAD). However, zero-parameter hand-designed MAD achieves 91.1% in 0.001 ms per patch.
-6. **Honesty in physical limits:** RealSense active IR stereo cannot measure depth beyond 10 meters in outdoor sunlight. Acknowledging sensor range boundaries and reporting far-field scenes as unmeasured is essential for scientific integrity.
+To explore what a minimal learned network discovers about patch correspondence, I implemented [`TinyStereoNet`](cnn.py), a compact 2-layer CNN running entirely on CPU:
+- Input: Two $15 \times 15$ grayscale patches stacked along channels ($2 \times 15 \times 15$).
+- Architecture:
+  - Conv1: $2 \to 8$ channels, $3 \times 3$, ReLU (152 params)
+  - Conv2: $8 \to 12$ channels, $3 \times 3$, ReLU (876 params)
+  - Global Average Pooling: $12 \times 11 \times 11 \to 12$
+  - Linear Classifier: $12 \to 2$ logits (26 params)
+  - Total: **1,054 trainable parameters**
+
+> [!NOTE]
+> TinyStereoNet performs patch correspondence classification ($y \in \{0, 1\}$), determining whether two $15 \times 15$ patches match. It does not perform dense disparity map reconstruction.
+
+![TinyStereoNet patch correspondence classifier](assets/fig06_cnn.png)
+*Figure 6: TinyStereoNet patch classifier: training dynamics, held-out test generalization against classical Mean Absolute Difference (MAD) with full 0-100% axis and multi-seed error bars, and learned Conv1 filter kernels. [Vector PDF](assets/fig06_cnn.pdf)*
+
+### Training and Statistical Validation Protocol
+
+To prevent data leakage, training (1,000 pairs), validation (200 pairs), and test (246 pairs) sets were sampled from mutually disjoint synthetic scenes.
+
+Model selection was performed strictly on validation accuracy; held-out test data was evaluated once:
+1. **Confirmatory Hypothesis Test (Primary Model):** The primary model (Seed 202, selected at 95.96% val acc) achieves **95.53% accuracy** on held-out test data vs 91.06% for classical MAD (+4.47 percentage points). On the 15 discordant pairs ($n_{01}=2, n_{10}=13$), the exact paired McNemar test yields **$p = 0.0074$** ($p < 0.01$), with a 95% bootstrap confidence interval of **$[+1.63\%, +7.73\%]$**.
+2. **Descriptive Initialization Stability:** Across five random seeds (`[42, 101, 202, 303, 404]`), test accuracy is $95.53\% \pm 0.70\%$, confirming that correspondence learning is robust to weight initialization.
+
+```text
+Table 6: Patch Correspondence Classification on Untouched Held-Out Test Data
+```
+
+| Method | Test Accuracy | Precision | Recall | F1 Score | CPU Latency / Patch | Parameters |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Classical Baseline (MAD)** | 91.06% | 87.97% | 95.12% | 91.41% | **0.001 ms** | **0 (hand-designed)** |
+| **TinyStereoNet (Primary Model, Seed 202)** | **95.53%** | **95.90%** | **95.12%** | **95.51%** | 0.041 ms | 1,054 |
+| **TinyStereoNet (5 Seeds, Descriptive)** | **95.53% $\pm$ 0.70%** | **96.1% $\pm$ 1.9%** | **94.9% $\pm$ 0.9%** | **95.5% $\pm$ 0.6%** | 0.041 ms | 1,054 |
+
+Training requires **5.3 seconds** on CPU. Learned Conv1 filter kernels specialize in horizontal edge extraction and cross-view difference detection.
 
 ---
 
-## 7. Reproduce
+## 8. What Worked and What Failed
+
+### What Worked
+
+1. **Classical SGBM Metric Triangulation:** With accurate epipolar rectification, classical SGBM achieves 5.9–7.6 cm median depth accuracy on outdoor volcanic terrain and 7.8 cm macro-average across 15 Middlebury scenes.
+2. **Resolution Scaling for Real-Time CPU Throughput:** Downscaling input resolution to $0.5\times$ (360p) provides a $6.2\times$ matching speedup, delivering 12.6–24.2 FPS on commodity CPU hardware.
+3. **Validity-Aware Median Filtering:** `median_valid` suppresses isolated disparity spikes without smoothing true depth boundaries or bleeding invalid sentinel values (adding only 4.6 ms overhead).
+4. **Compact Feature Learning:** A 1,054-parameter CNN outperforms hand-crafted MAD (+4.47 pp accuracy, $p = 0.0074$) while training in 5.3 seconds on CPU.
+5. **Completeness-Aware Metric Evaluation:** Evaluating completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}}$) exposes artificial accuracy gains caused by confidence thresholding.
+
+### What Failed
+
+1. **WLS Disparity Filtering:** Dual-pass matching and sparse matrix solving doubled latency (from 43.4 ms to 111.4 ms) while smoothing sharp depth boundaries, increasing conditional Bad@2 on Jadeplant from 11.42% to 26.89%.
+2. **Cross-Terrain Camera Extrinsic Transfer:** Rig extrinsics estimated on one site degraded median depth error from 0.076 m to 0.181 m on another site due to physical rig flexure during transport ($2.6^\circ$–$4.7^\circ$ rotation shifts) and collinear SIFT feature distributions along handrails.
+3. **Active IR Depth in Far-Field Daylight:** In `puncakWarung` ($Z > 15$ m), solar ambient radiation completely washed out the active IR projection pattern, leaving stereo unmeasured against RealSense.
+4. **Conditional Error Optimization Alone:** Aggressive confidence thresholding (`confidence_edge`) dropped conditional Bad@2 to 4.41% by discarding 58.9% of evaluable pixels, blowing up completeness-aware error to 60.73%.
+5. **Dense CNN Stereo on CPU:** While 0.041 ms per patch is fast, evaluating a dense 720p image grid requires millions of forward passes, confirming that classical SGBM remains superior for real-time CPU deployment.
+
+---
+
+## 9. Reproduction Instructions
 
 ### Requirements
 
@@ -308,31 +351,19 @@ python -m pip install -r requirements-ml.txt
 
 ### Fast Sanity Verification (< 15 seconds)
 
-Runs quick end-to-end verification across synthetic stereo, Middlebury sample, Gunung sample, and CNN architecture:
+Runs quick end-to-end verification across synthetic stereo, Middlebury sample, Gunung sample, and CNN architecture. If local dataset archives are not present, it automatically runs safe synthetic demonstrations:
 
 ```bash
 python reproduce.py --quick
 ```
 
-### Full Benchmark Suite
-
-Executes the complete research suite across all modules, saves CSV and JSON metrics, and generates all publication figures and animated GIF:
+### Run Unit Tests
 
 ```bash
-python reproduce.py --full
+python -m pytest -q
 ```
 
-Generated outputs in `results/`:
-- `synthetic.csv`: Procedural benchmark across 6 perturbations and 3 matchers.
-- `middlebury.csv`: Middlebury 2014 evaluation across 15 training scenes.
-- `gunung.csv`: Four Gunung volcanic terrains evaluation and RealSense metrics.
-- `optimization.csv`: Filter ablation and SGBM block-size sensitivity data.
-- `best_params.json`: CPU multiscale, threading, and preset profile benchmarks.
-- `cnn_metrics.json`: TinyStereoNet and classical MAD test metrics with multi-seed stats.
-- `cnn_test_samples.npz`: All 246 test samples with ground truth and model predictions.
-- `environment.json`: Hardware, compiler, and OS provenance record.
-
-### Individual Modular Commands
+### Modular Benchmark Commands
 
 ```bash
 # Run synthetic procedural benchmark
@@ -357,15 +388,27 @@ python reproduce.py --cnn
 python visualize.py
 ```
 
-### Run Unit Tests
+### Full Benchmark Suite
+
+Executes the complete research suite across all modules, updates result metrics, and generates all publication figures and animated GIF:
 
 ```bash
-python -m pytest -q
+python reproduce.py --full
 ```
+
+### Output Files in `results/`
+
+- `synthetic.csv`: Procedural benchmark across 6 perturbations and 3 matchers.
+- `middlebury.csv`: Middlebury 2014 evaluation across 15 training scenes.
+- `gunung.csv`: Four Gunung volcanic terrains evaluation and RealSense metrics.
+- `optimization.csv`: Filter ablation and SGBM block-size sensitivity data.
+- `best_params.json`: CPU multiscale, threading, and preset profile benchmarks.
+- `cnn_metrics.json`: TinyStereoNet and classical MAD test metrics with multi-seed stats.
+- `environment.json`: Hardware, compiler, and OS provenance record.
 
 ---
 
-## References
+## 10. Scientific References
 
 - D. Scharstein and R. Szeliski, "A taxonomy and evaluation of dense two-frame stereo correspondence algorithms," *International Journal of Computer Vision*, 47(1-3):7-42, 2002. https://doi.org/10.1023/A:1014573219977
 - H. Hirschmuller, "Stereo processing by semiglobal matching and mutual information," *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 30(2):328-341, 2008. https://doi.org/10.1109/TPAMI.2007.1166

@@ -7,6 +7,7 @@ Integrates real-world stereo evaluation across:
 4. Metric depth validation and honest failure reporting (e.g. out-of-range scenes).
 """
 
+import os
 from pathlib import Path
 import re
 import time
@@ -17,10 +18,10 @@ import pandas as pd
 
 import stereo
 
-# Default dataset locations
-DEFAULT_MIDDLEBURY_ROOT = Path("data/middlebury/MiddEval3/trainingQ")
-DEFAULT_GUNUNG_ROOT = Path(r"D:\02_Riset\Research Paper\source_code\comparison\gunung")
-DEFAULT_CALIB_PATH = Path(r"D:\02_Riset\Research Paper\source_code\calibration\calib_params\stereo_params_advanced.npz")
+# Default dataset locations (configurable via environment variables)
+DEFAULT_MIDDLEBURY_ROOT = Path(os.environ.get("MIDDLEBURY_ROOT", "data/middlebury/MiddEval3/trainingQ"))
+DEFAULT_GUNUNG_ROOT = Path(os.environ.get("GUNUNG_ROOT", "data/gunung"))
+DEFAULT_CALIB_PATH = Path(os.environ.get("STEREO_CALIB_PATH", "data/calib/stereo_params_advanced.npz"))
 
 # Rectified left camera intrinsics at 1280x720
 K_RECT = np.array([
@@ -396,11 +397,13 @@ def compute_metric_depth_errors(
     """Compute depth error statistics against registered reference depth map."""
     eval_ref = (ref_depth >= min_z) & (ref_depth <= max_z) & np.isfinite(ref_depth)
     n_ref = np.count_nonzero(eval_ref)
+    total_pixels = int(pred_depth.size)
     if n_ref == 0:
         return {
             "eval_pixels": 0,
             "total_ref_pixels": 0,
             "ref_coverage_pct": 0.0,
+            "frame_coverage_pct": 0.0,
             "depth_mae_m": float("nan"),
             "depth_median_m": float("nan"),
             "depth_rmse_m": float("nan"),
@@ -410,12 +413,14 @@ def compute_metric_depth_errors(
     joint = eval_ref & (pred_depth >= min_z) & (pred_depth <= (max_z * 1.5)) & np.isfinite(pred_depth)
     n_joint = np.count_nonzero(joint)
     cov_pct = float(n_joint / n_ref * 100.0)
+    frame_cov_pct = float(n_joint / total_pixels * 100.0)
 
     if n_joint == 0:
         return {
             "eval_pixels": 0,
             "total_ref_pixels": int(n_ref),
             "ref_coverage_pct": 0.0,
+            "frame_coverage_pct": 0.0,
             "depth_mae_m": float("nan"),
             "depth_median_m": float("nan"),
             "depth_rmse_m": float("nan"),
@@ -435,6 +440,7 @@ def compute_metric_depth_errors(
         "eval_pixels": int(n_joint),
         "total_ref_pixels": int(n_ref),
         "ref_coverage_pct": cov_pct,
+        "frame_coverage_pct": frame_cov_pct,
         "depth_mae_m": mae,
         "depth_median_m": med,
         "depth_rmse_m": rmse,
@@ -450,8 +456,8 @@ def evaluate_gunung_terrain(
 ) -> Tuple[Dict[str, Any], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
     """Evaluate stereo matching and RealSense depth registration for one Gunung terrain.
 
-    For terrains with far-field geometry (>10m, e.g. puncakWarung), registration is
-    intentionally skipped to prevent fabricating false ground truth.
+    For terrains with far-field geometry (>10m, e.g. puncakWarung), active IR depth
+    at SIFT correspondences is unmeasurable, naturally yielding OUT_OF_RANGE.
 
     Returns:
         record: Dictionary of registration status and error metrics.
@@ -502,17 +508,13 @@ def evaluate_gunung_terrain(
         "tz_m": float("nan"),
         "eval_pixels": 0,
         "ref_coverage_pct": 0.0,
+        "frame_coverage_pct": 0.0,
         "depth_mae_m": float("nan"),
         "depth_median_m": float("nan"),
         "depth_rmse_m": float("nan"),
         "delta_125_pct": float("nan"),
         "warp_mae": stereo.compute_photometric_warp_mae(rect_l, rect_r, disp_st)
     }
-
-    # If terrain is puncakWarung, geometry is far-field (>15m), outside RealSense range
-    if terrain_name == "puncakWarung":
-        record["status"] = "OUT_OF_RANGE"
-        return record, rect_l, None, st_depth
 
     if not rs_rgb_path.exists() or not rs_npz_path.exists():
         record["status"] = "NO_REALSENSE_DATA"
@@ -530,7 +532,10 @@ def evaluate_gunung_terrain(
     record["reproj_med_px"] = reg_stats["reproj_med_px"]
 
     if not success or R_mat is None or tvec is None:
-        record["status"] = "REGISTRATION_FAILED"
+        if reg_stats.get("valid_3d_2d_pairs", 0) == 0 and reg_stats.get("sift_matches", 0) > 0:
+            record["status"] = "OUT_OF_RANGE"
+        else:
+            record["status"] = "REGISTRATION_FAILED"
         return record, rect_l, None, st_depth
 
     record["status"] = "VERIFIED"

@@ -99,3 +99,18 @@ def test_puncak_warung_honest_reporting():
         assert ref_d is None
         assert np.isnan(rec["depth_mae_m"])
         assert rec["warp_mae"] > 0.0
+
+
+def test_gunung_coverage_reporting():
+    """Verify Gunung terrain evaluation reports valid frame and reference coverage."""
+    if field.DEFAULT_GUNUNG_ROOT.exists() and (field.DEFAULT_GUNUNG_ROOT / "puncakTinggi").exists():
+        rec, _, ref_d, st_d = field.evaluate_gunung_terrain("puncakTinggi")
+        assert rec["status"] == "VERIFIED"
+        assert "frame_coverage_pct" in rec
+        assert "ref_coverage_pct" in rec
+        # For a 1280x720 frame, frame coverage should match eval_pixels / (1280 * 720) * 100
+        expected_cov = (rec["eval_pixels"] / (1280 * 720)) * 100.0
+        assert np.isclose(rec["frame_coverage_pct"], expected_cov, atol=1e-3)
+        assert 1.0 <= rec["frame_coverage_pct"] <= 15.0
+        assert 10.0 <= rec["ref_coverage_pct"] <= 60.0
+

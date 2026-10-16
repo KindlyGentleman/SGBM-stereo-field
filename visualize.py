@@ -213,7 +213,7 @@ def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> None:
 
     # (a) Left view
     axs[0, 0].imshow(cv2.cvtColor(im0, cv2.COLOR_BGR2RGB))
-    axs[0, 0].set_title("(a) Left View $I_0$ (Jadeplant)", fontweight="bold")
+    axs[0, 0].set_title("(a) Left View $I_0$ (Jadeplant, 0.5x scale)", fontweight="bold")
     axs[0, 0].axis("off")
 
     # (b) Reference Disparity
@@ -231,14 +231,14 @@ def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> None:
     # (d) Raw SGBM Disparity
     raw_plot = np.where(disp_raw_up > 0, disp_raw_up, np.nan)
     im_d = axs[1, 0].imshow(raw_plot, cmap="viridis", vmin=10, vmax=140)
-    axs[1, 0].set_title(f"(d) Raw SGBM Disparity (Bad@2: {bad2_raw:.1f}%)", fontweight="bold")
+    axs[1, 0].set_title(f"(d) Raw SGBM (0.5x) Disparity (Bad@2: {bad2_raw:.1f}%)", fontweight="bold")
     axs[1, 0].axis("off")
     fig.colorbar(im_d, ax=axs[1, 0], fraction=0.046, pad=0.04, label="Disparity (px)")
 
     # (e) WLS Filtered Disparity
     wls_plot = np.where(disp_wls_up > 0, disp_wls_up, np.nan)
     im_e = axs[1, 1].imshow(wls_plot, cmap="viridis", vmin=10, vmax=140)
-    axs[1, 1].set_title(f"(e) SGBM + WLS Disparity (Bad@2: {bad2_wls:.1f}%)", fontweight="bold")
+    axs[1, 1].set_title(f"(e) SGBM + WLS (0.5x) Disparity (Bad@2: {bad2_wls:.1f}%)", fontweight="bold")
     axs[1, 1].axis("off")
     fig.colorbar(im_e, ax=axs[1, 1], fraction=0.046, pad=0.04, label="Disparity (px)")
 
@@ -290,7 +290,8 @@ def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> None:
         ax.imshow(comp)
         if rec["status"] == "VERIFIED":
             med_cm = rec["depth_median_m"] * 100.0
-            desc = f"Verified: Med Err {med_cm:.1f} cm | Inliers {rec['inliers']} | Reproj {rec['reproj_med_px']:.2f} px"
+            cov_f = rec.get("frame_coverage_pct", (rec["eval_pixels"] / (1280 * 720)) * 100.0)
+            desc = f"Verified: Med Err {med_cm:.1f} cm | Inliers {rec['inliers']} | Cov {cov_f:.1f}%"
         else:
             desc = "Out of Range (>15 m, Active IR unmeasured)"
         title_str = f"({chr(97 + idx)}) {t}\n{desc}"
@@ -397,14 +398,17 @@ def generate_figure_05_cpu_pareto(output_dir: Path = ASSETS_DIR) -> None:
     presets = ["FAST", "BALANCED", "QUALITY"]
     colors = ["#2ca02c", "#ff7f0e", "#1f77b4"]
     markers = ["o", "s", "^"]
-    preset_bad2 = {"FAST": 23.5, "BALANCED": 23.5, "QUALITY": 11.4}
 
     for p, c, m in zip(presets, colors, markers):
-        lat = pdata["presets"][p]["mean_ms"]
-        b2 = preset_bad2[p]
-        fps = pdata["presets"][p]["fps"]
-        ax_a.scatter(lat, b2, color=c, marker=m, s=130, label=f"{p} ({fps:.1f} FPS, {lat:.1f} ms)", zorder=5)
-        offset_y = 0.8 if p != "BALANCED" else -1.2
+        p_info = pdata["presets"][p]
+        lat = p_info["mean_ms"]
+        lat_std = p_info.get("std_ms", 0.0)
+        b2 = p_info.get("bad2_cond_pct", 20.0)
+        fps = p_info["fps"]
+        sc = p_info.get("scale", 1.0)
+        ax_a.errorbar(lat, b2, xerr=lat_std, fmt=m, color=c, markersize=8, capsize=4,
+                      label=f"{p} ({sc}x, {fps:.1f} FPS)", zorder=5)
+        offset_y = 1.0 if p != "BALANCED" else -1.8
         ax_a.annotate(f"{p}\n{lat:.1f} ms\n({fps:.1f} FPS)", xy=(lat, b2), xytext=(lat + 8, b2 + offset_y),
                      fontsize=8.5, fontweight="bold")
 
@@ -479,7 +483,8 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     mad_acc = cdata.get("classical_baseline", {}).get("accuracy", 91.06)
     cnn_mean = ms_stats.get("cnn_accuracy_mean", cdata.get("tiny_cnn", {}).get("accuracy", 94.31))
     cnn_std = ms_stats.get("cnn_accuracy_std", 0.70)
-    p_val = ms_stats.get("median_mcnemar_pvalue", 0.0042)
+    prim_p = cdata.get("paired_comparison", {}).get("mcnemar_exact_pvalue", 0.0074)
+    prim_seed = cdata.get("selected_seed", 202)
 
     accs = [mad_acc, cnn_mean]
     errs = [0.0, cnn_std]
@@ -488,7 +493,7 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     bars = ax_b.bar(methods, accs, yerr=errs, capsize=5, width=0.45, color=colors, alpha=0.85)
     ax_b.set_ylabel("Held-Out Test Accuracy (%)")
     ax_b.set_ylim(0.0, 115.0)
-    ax_b.set_title(f"(b) Held-Out Accuracy (p = {p_val:.4f})", fontweight="bold")
+    ax_b.set_title(f"(b) Held-Out Accuracy (Seed {prim_seed} p = {prim_p:.4f})", fontweight="bold")
     ax_b.grid(True, alpha=0.3, axis="y")
 
     ax_b.text(bars[0].get_x() + bars[0].get_width() / 2.0, mad_acc + 3.0, f"{mad_acc:.1f}%",

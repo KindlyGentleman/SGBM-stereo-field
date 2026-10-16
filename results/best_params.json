@@ -13,11 +13,11 @@
       "mode": 2,
       "use_wls": false,
       "filter": "median_valid",
-      "description": "0.5x scale, single-pass SGBM + validity-aware median filter for low-latency robotics"
+      "description": "0.5x scale (360p), 80 disparities, single-pass SGBM + validity-aware median filter for low-latency robotics"
     },
     "BALANCED": {
-      "scale": 0.5,
-      "numDisparities": 80,
+      "scale": 0.75,
+      "numDisparities": 128,
       "blockSize": 5,
       "P1": 80,
       "P2": 640,
@@ -28,14 +28,14 @@
       "mode": 2,
       "use_wls": false,
       "filter": "median_valid",
-      "description": "0.5x scale, single-pass SGBM + validity-aware median filter (Pareto-superior to WLS on CPU)"
+      "description": "0.75x scale (540p), 128 disparities, single-pass SGBM + validity-aware median filter"
     },
     "QUALITY": {
       "scale": 1.0,
       "numDisparities": 160,
-      "blockSize": 7,
-      "P1": 150,
-      "P2": 1200,
+      "blockSize": 5,
+      "P1": 100,
+      "P2": 800,
       "disp12MaxDiff": 1,
       "uniquenessRatio": 10,
       "speckleWindowSize": 100,
@@ -43,7 +43,7 @@
       "mode": 2,
       "use_wls": false,
       "filter": "median_valid",
-      "description": "1.0x native scale, 160 disparities, block size 7 + validity-aware median filter"
+      "description": "1.0x native scale (720p), 160 disparities, block size 5 (Pareto-dominant over bs=7) + median filter"
     }
   },
   "benchmarked_performance": {
@@ -53,51 +53,72 @@
         "width": 1280,
         "height": 720,
         "num_disparities": 160,
-        "mean_ms": 208.38882999960333,
-        "std_ms": 22.393084681647107,
-        "fps": 4.798721697328515
+        "mean_ms": 557.6319200044964,
+        "std_ms": 110.39037675660573,
+        "fps": 1.793297629002186
       },
       "360p": {
         "scale": 0.5,
         "width": 640,
         "height": 360,
         "num_disparities": 80,
-        "mean_ms": 33.517570002004504,
-        "std_ms": 7.496549274243777,
-        "fps": 29.835098425697193
+        "mean_ms": 70.18932000501081,
+        "std_ms": 15.269486416166794,
+        "fps": 14.247181763957965
       },
       "180p": {
         "scale": 0.25,
         "width": 320,
         "height": 180,
         "num_disparities": 48,
-        "mean_ms": 7.642759999725968,
-        "std_ms": 0.9042438729999493,
-        "fps": 130.84278454849493
+        "mean_ms": 20.140079979319125,
+        "std_ms": 5.960678790333645,
+        "fps": 49.65223579185642
       }
     },
     "threads": {
-      "threads_1": 76.61155000096187,
-      "threads_2": 64.72285999916494,
-      "threads_4": 51.948299998184666,
-      "threads_8": 31.986440013861284,
-      "threads_16": 30.428940005367622
+      "threads_1": 158.55124999652617,
+      "threads_2": 123.19914000108838,
+      "threads_4": 91.20537000708282,
+      "threads_8": 76.94509999710135,
+      "threads_16": 68.73986000427976
     },
     "presets": {
       "FAST": {
-        "mean_ms": 34.73889999440871,
-        "std_ms": 5.39574353040709,
-        "fps": 28.786173429813605
+        "scale": 0.5,
+        "num_disparities": 80,
+        "block_size": 5,
+        "mean_ms": 79.51015998842195,
+        "std_ms": 13.575008646953501,
+        "fps": 12.577009028099267,
+        "bad2_cond_pct": 21.61015196023382,
+        "bad2_ca_pct": 46.13344488940515,
+        "coverage_pct": 68.716238719163,
+        "disp_mae_px": 5.844257354736328
       },
       "BALANCED": {
-        "mean_ms": 74.20416001114063,
-        "std_ms": 23.58821675837283,
-        "fps": 13.476333400308894
+        "scale": 0.75,
+        "num_disparities": 128,
+        "block_size": 5,
+        "mean_ms": 178.9143299916759,
+        "std_ms": 33.993548383731394,
+        "fps": 5.589267221057841,
+        "bad2_cond_pct": 16.348747474991836,
+        "bad2_ca_pct": 43.823665591721024,
+        "coverage_pct": 67.15540139878317,
+        "disp_mae_px": 5.00534725189209
       },
       "QUALITY": {
-        "mean_ms": 338.7734600051772,
-        "std_ms": 41.56797015821914,
-        "fps": 2.9518250927469873
+        "scale": 1.0,
+        "num_disparities": 160,
+        "block_size": 5,
+        "mean_ms": 491.47296000737697,
+        "std_ms": 134.88558195418966,
+        "fps": 2.034699935445055,
+        "bad2_cond_pct": 9.970795615851815,
+        "bad2_ca_pct": 37.14695346324742,
+        "coverage_pct": 69.81406418806404,
+        "disp_mae_px": 3.45939564704895
       }
     }
   }

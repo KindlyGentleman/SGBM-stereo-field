@@ -146,11 +146,11 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
         "filter": "median_valid",
-        "description": "0.5x scale, single-pass SGBM + validity-aware median filter for low-latency robotics"
+        "description": "0.5x scale (360p), 80 disparities, single-pass SGBM + validity-aware median filter for low-latency robotics"
     },
     "BALANCED": {
-        "scale": 0.5,
-        "numDisparities": 80,
+        "scale": 0.75,
+        "numDisparities": 128,
         "blockSize": 5,
         "P1": 80,
         "P2": 640,
@@ -161,14 +161,14 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
         "filter": "median_valid",
-        "description": "0.5x scale, single-pass SGBM + validity-aware median filter (Pareto-superior to WLS on CPU)"
+        "description": "0.75x scale (540p), 128 disparities, single-pass SGBM + validity-aware median filter"
     },
     "QUALITY": {
         "scale": 1.0,
         "numDisparities": 160,
-        "blockSize": 7,
-        "P1": 150,
-        "P2": 1200,
+        "blockSize": 5,
+        "P1": 100,
+        "P2": 800,
         "disp12MaxDiff": 1,
         "uniquenessRatio": 10,
         "speckleWindowSize": 100,
@@ -176,7 +176,7 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
         "filter": "median_valid",
-        "description": "1.0x native scale, 160 disparities, block size 7 + validity-aware median filter"
+        "description": "1.0x native scale (720p), 160 disparities, block size 5 (Pareto-dominant over bs=7) + median filter"
     }
 }
 
@@ -492,9 +492,22 @@ def run_cpu_profiling(
     cv2.setNumThreads(orig_threads)
 
     # Preset benchmark
-    preset_results: Dict[str, Dict[str, float]] = {}
+    ref_dir = field.DEFAULT_MIDDLEBURY_ROOT / "Jadeplant"
+    if ref_dir.exists():
+        im0_ref = cv2.imread(str(ref_dir / "im0.png"))
+        im1_ref = cv2.imread(str(ref_dir / "im1.png"))
+        disp_gt_ref = stereo.load_pfm(str(ref_dir / "disp0GT.pfm"))
+        mask_ref = cv2.imread(str(ref_dir / "mask0nocc.png"), cv2.IMREAD_GRAYSCALE) == 255
+    else:
+        im0_ref, im1_ref, disp_gt_ref, mask_ref = stereo.generate_layered_synthetic_scene(320, 240, seed=42)
+
+    preset_results: Dict[str, Dict[str, Any]] = {}
     for p_name in ["FAST", "BALANCED", "QUALITY"]:
-        # Warmup
+        # Accuracy evaluation on reference scene
+        d_ref, _ = run_stereo_pipeline(im0_ref, im1_ref, preset=p_name)
+        m_acc = stereo.compute_full_disparity_metrics(d_ref, disp_gt_ref, mask_ref)
+
+        # Warmup on profiling image
         run_stereo_pipeline(input_image, right_image, preset=p_name)
         p_times = []
         for _ in range(iterations):
@@ -502,9 +515,16 @@ def run_cpu_profiling(
             p_times.append(stats["wall_ms"])
 
         preset_results[p_name] = {
+            "scale": PIPELINE_PRESETS[p_name]["scale"],
+            "num_disparities": PIPELINE_PRESETS[p_name]["numDisparities"],
+            "block_size": PIPELINE_PRESETS[p_name]["blockSize"],
             "mean_ms": float(np.mean(p_times)),
             "std_ms": float(np.std(p_times)),
-            "fps": float(1000.0 / np.mean(p_times))
+            "fps": float(1000.0 / np.mean(p_times)),
+            "bad2_cond_pct": float(m_acc["bad2_pct"]),
+            "bad2_ca_pct": float(m_acc["bad2_ca_pct"]),
+            "coverage_pct": float(m_acc["coverage_pct"]),
+            "disp_mae_px": float(m_acc["disp_mae_px"])
         }
 
     profile_summary = {

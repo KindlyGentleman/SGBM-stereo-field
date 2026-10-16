@@ -45,6 +45,15 @@ def test_filter_suite_application():
 
 def test_pipeline_presets_execution():
     """Verify FAST, BALANCED, and QUALITY presets execute and return positive metrics."""
+    # Verify presets have distinct, strictly monotonic scales and disparity ranges
+    scales = [optimize.PIPELINE_PRESETS[p]["scale"] for p in ["FAST", "BALANCED", "QUALITY"]]
+    ndisps = [optimize.PIPELINE_PRESETS[p]["numDisparities"] for p in ["FAST", "BALANCED", "QUALITY"]]
+    assert scales == [0.5, 0.75, 1.0], f"Presets must use distinct scales: {scales}"
+    assert ndisps == [80, 128, 160], f"Presets must have strictly increasing disparities: {ndisps}"
+    # Verify block size is 5 (Pareto-dominant over bs=7)
+    for p in ["FAST", "BALANCED", "QUALITY"]:
+        assert optimize.PIPELINE_PRESETS[p]["blockSize"] == 5
+
     img_l = np.random.randint(40, 200, (180, 240, 3), dtype=np.uint8)
     img_r = np.roll(img_l, -8, axis=1)
 
