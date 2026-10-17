@@ -93,26 +93,62 @@ def test_metric_depth_errors_calculation():
 
 def test_puncak_warung_honest_reporting():
     """Verify that distant terrain puncakWarung reports OUT_OF_RANGE without fabricated depth."""
-    if field.DEFAULT_GUNUNG_ROOT.exists() and (field.DEFAULT_GUNUNG_ROOT / "puncakWarung").exists():
-        rec, _, ref_d, st_d = field.evaluate_gunung_terrain("puncakWarung")
-        assert rec["status"] == "OUT_OF_RANGE"
-        assert ref_d is None
-        assert np.isnan(rec["depth_mae_m"])
-        assert rec["warp_mae"] > 0.0
+    warung_dir = field.DEFAULT_GUNUNG_ROOT / "puncakWarung"
+    if not (field.DEFAULT_GUNUNG_ROOT.exists() and warung_dir.exists() and (warung_dir / "stereo").exists()):
+        pytest.skip(f"Gunung terrain raw data not present at {warung_dir}")
+    rec, _, ref_d, st_d = field.evaluate_gunung_terrain("puncakWarung")
+    assert rec["status"] == "OUT_OF_RANGE"
+    assert ref_d is None
+    assert np.isnan(rec["depth_mae_m"])
+    assert rec["warp_mae"] > 0.0
 
 
 def test_gunung_coverage_reporting():
     """Verify Gunung terrain evaluation reports valid frame and reference coverage."""
-    if field.DEFAULT_GUNUNG_ROOT.exists() and (field.DEFAULT_GUNUNG_ROOT / "puncakTinggi").exists():
-        rec, _, ref_d, st_d = field.evaluate_gunung_terrain("puncakTinggi")
-        assert rec["status"] == "VERIFIED"
-        assert "frame_coverage_pct" in rec
-        assert "ref_coverage_pct" in rec
-        # For a 1280x720 frame, frame coverage should match eval_pixels / (1280 * 720) * 100
-        expected_cov = (rec["eval_pixels"] / (1280 * 720)) * 100.0
-        assert np.isclose(rec["frame_coverage_pct"], expected_cov, atol=1e-3)
-        assert 1.0 <= rec["frame_coverage_pct"] <= 15.0
-        assert 10.0 <= rec["ref_coverage_pct"] <= 60.0
+    tinggi_dir = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi"
+    if not (field.DEFAULT_GUNUNG_ROOT.exists() and tinggi_dir.exists() and (tinggi_dir / "stereo").exists()):
+        pytest.skip(f"Gunung terrain raw data not present at {tinggi_dir}")
+    rec, _, ref_d, st_d = field.evaluate_gunung_terrain("puncakTinggi")
+    assert rec["status"] == "VERIFIED"
+    assert "frame_coverage_pct" in rec
+    assert "ref_coverage_pct" in rec
+    # For a 1280x720 frame, frame coverage should match eval_pixels / (1280 * 720) * 100
+    expected_cov = (rec["eval_pixels"] / (1280 * 720)) * 100.0
+    assert np.isclose(rec["frame_coverage_pct"], expected_cov, atol=1e-3)
+    assert 1.0 <= rec["frame_coverage_pct"] <= 15.0
+    assert 10.0 <= rec["ref_coverage_pct"] <= 60.0
+
+
+def test_gunung_out_of_range_and_unmeasured_logic():
+    """Verify depth error logic when reference depths are outside active IR range."""
+    # Active range is [0.4, 4.0] m. Simulate far field scene (> 15 m)
+    far_ref = np.full((100, 100), 16.0, dtype=np.float32)
+    stereo_pred = np.full((100, 100), 15.5, dtype=np.float32)
+
+    stats = field.compute_metric_depth_errors(stereo_pred, far_ref, min_z=0.4, max_z=4.0)
+    assert stats["eval_pixels"] == 0
+    assert stats["ref_coverage_pct"] == 0.0
+    assert stats["frame_coverage_pct"] == 0.0
+    assert np.isnan(stats["depth_mae_m"])
+    assert np.isnan(stats["depth_median_m"])
+    assert np.isnan(stats["delta_125_pct"])
+
+
+def test_middlebury_empty_directory_handling():
+    """Verify run_middlebury_benchmark returns typed empty DataFrame without throwing KeyError."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        empty_root = Path(tmpdir)
+        df = field.run_middlebury_benchmark(empty_root, scale=0.5)
+
+        assert len(df) == 0
+        expected_cols = [
+            "scene", "scale", "width", "height", "ndisp", "runtime_ms",
+            "bad1_pct", "bad2_pct", "bad4_pct", "bad2_ca_pct",
+            "disp_mae_px", "disp_rmse_px", "coverage_pct",
+            "depth_mae_m", "depth_rmse_m"
+        ]
+        for col in expected_cols:
+            assert col in df.columns, f"Missing column {col} in empty DataFrame"
 
 
 def test_middlebury_upscaling_normalized_convolution():
@@ -151,13 +187,14 @@ def test_middlebury_upscaling_normalized_convolution():
 def test_evaluate_middlebury_scene_smoke():
     """Verify evaluate_middlebury_scene runs and returns valid metric bounds on available training data."""
     adirondack_dir = field.DEFAULT_MIDDLEBURY_ROOT / "Adirondack"
-    if adirondack_dir.exists():
-        res = field.evaluate_middlebury_scene(adirondack_dir, scale=0.5)
-        assert res["scene"] == "Adirondack"
-        assert res["scale"] == 0.5
-        assert 0.0 <= res["bad2_pct"] <= 100.0
-        assert 0.0 <= res["coverage_pct"] <= 100.0
-        assert np.isfinite(res["disp_mae_px"])
-        assert np.isfinite(res["depth_mae_m"])
-        assert res["runtime_ms"] > 0.0
+    if not (adirondack_dir.exists() and (adirondack_dir / "im0.png").exists()):
+        pytest.skip(f"Adirondack scene not present at {adirondack_dir}")
+    res = field.evaluate_middlebury_scene(adirondack_dir, scale=0.5)
+    assert res["scene"] == "Adirondack"
+    assert res["scale"] == 0.5
+    assert 0.0 <= res["bad2_pct"] <= 100.0
+    assert 0.0 <= res["coverage_pct"] <= 100.0
+    assert np.isfinite(res["disp_mae_px"])
+    assert np.isfinite(res["depth_mae_m"])
+    assert res["runtime_ms"] > 0.0
 

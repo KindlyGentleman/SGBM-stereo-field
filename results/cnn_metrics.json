@@ -3,7 +3,7 @@
   "model_parameters": 1054,
   "epochs": 15,
   "cpu_threads": 2,
-  "training_time_seconds": 5.332023599999957,
+  "training_time_seconds": 2.218421199999284,
   "best_val_accuracy": 95.95959595959596,
   "optimal_classical_threshold": 0.3636363636363636,
   "classical_baseline": {
@@ -31,8 +31,8 @@
       "TN": 118
     },
     "samples_evaluated": 246,
-    "inference_time_s": 0.01015070005087182,
-    "inference_ms_per_patch": 0.041263008336877315
+    "inference_time_s": 0.003844199998638942,
+    "inference_ms_per_patch": 0.015626829262759927
   },
   "paired_comparison": {
     "acc_a": 91.05691056910568,
@@ -75,7 +75,7 @@
     "seed_runs": [
       {
         "seed": 42,
-        "train_time_s": 10.613071000028867,
+        "train_time_s": 2.266847400000188,
         "best_val_accuracy": 94.94949494949495,
         "cnn_accuracy": 94.3089430894309,
         "cnn_precision": 92.91338582677166,
@@ -90,7 +90,7 @@
       },
       {
         "seed": 101,
-        "train_time_s": 5.636171700025443,
+        "train_time_s": 2.388068700000076,
         "best_val_accuracy": 94.44444444444444,
         "cnn_accuracy": 95.9349593495935,
         "cnn_precision": 96.69421487603306,
@@ -105,7 +105,7 @@
       },
       {
         "seed": 202,
-        "train_time_s": 5.332023599999957,
+        "train_time_s": 2.218421199999284,
         "best_val_accuracy": 95.95959595959596,
         "cnn_accuracy": 95.52845528455285,
         "cnn_precision": 95.90163934426229,
@@ -120,7 +120,7 @@
       },
       {
         "seed": 303,
-        "train_time_s": 5.007823100022506,
+        "train_time_s": 2.0911330999988422,
         "best_val_accuracy": 92.92929292929293,
         "cnn_accuracy": 95.9349593495935,
         "cnn_precision": 98.29059829059828,
@@ -135,7 +135,7 @@
       },
       {
         "seed": 404,
-        "train_time_s": 5.345919699990191,
+        "train_time_s": 1.807195600000341,
         "best_val_accuracy": 94.44444444444444,
         "cnn_accuracy": 95.9349593495935,
         "cnn_precision": 96.69421487603306,

@@ -104,16 +104,16 @@ Table 1: Synthetic Benchmark Performance Across Matchers and Perturbations
 
 | Scene & Perturbation | StereoBM Bad@2 | StereoBM Cov | StereoSGBM Bad@2 | StereoSGBM Cov | SGBM Latency |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Constant (Clean)** | 0.00% | 80.5% | **0.00%** | **84.2%** | 12.86 ms |
-| **Constant (Noise $\sigma=15$)** | 0.01% | 22.8% | **0.01%** | **84.2%** | 11.53 ms |
-| **Constant (Gamma $\gamma=1.6$)** | 0.35% | 80.5% | **0.22%** | **79.9%** | 18.53 ms |
-| **Layered (Clean)** | 2.48% | 77.6% | **2.03%** | **86.7%** | 16.41 ms |
-| **Layered (Brightness +30)** | 2.51% | 77.6% | **2.26%** | **85.6%** | 28.69 ms |
-| **Layered (Contrast 0.5x)** | 3.12% | 72.7% | **2.36%** | **86.6%** | 14.34 ms |
-| **Layered (Noise $\sigma=15$)** | 9.72% | 12.9% | **6.02%** | **81.0%** | 16.75 ms |
-| **Layered (Gamma $\gamma=1.6$)** | 3.05% | 77.3% | **1.76%** | **85.2%** | 22.71 ms |
+| **Constant (Clean)** | 0.00% | 84.3% | **0.51%** | **89.4%** | 3.84 ms |
+| **Constant (Noise $\sigma=15$)** | 12.10% | 23.7% | **1.06%** | **89.4%** | 2.73 ms |
+| **Constant (Gamma $\gamma=1.6$)** | 0.00% | 84.3% | **0.21%** | **84.8%** | 3.80 ms |
+| **Layered (Clean)** | 2.48% | 77.6% | **2.03%** | **86.7%** | 5.05 ms |
+| **Layered (Brightness +30)** | 2.48% | 77.6% | **2.26%** | **85.6%** | 4.69 ms |
+| **Layered (Contrast 0.5x)** | 2.97% | 72.7% | **2.36%** | **86.6%** | 4.61 ms |
+| **Layered (Noise $\sigma=15$)** | 9.99% | 13.0% | **6.02%** | **81.0%** | 6.40 ms |
+| **Layered (Gamma $\gamma=1.6$)** | 2.50% | 77.3% | **1.76%** | **85.2%** | 6.15 ms |
 
-Under clean conditions, SGBM recovers layered disparities with a 2.03% bad-pixel rate (pixels where $|d_{\mathrm{pred}} - d_{\mathrm{gt}}| > 2.0$ px). Under additive Gaussian noise ($\sigma = 15$), local StereoBM coverage collapses from 77.6% to 12.9% on the layered scene (and to 22.8% on the constant scene) because window SAD costs fail confidence checks. In contrast, SGBM maintains 81.0% coverage with 6.02% bad-pixel error, demonstrating the stabilizing effect of directional dynamic programming paths.
+Under clean conditions, SGBM recovers layered disparities with a 2.03% bad-pixel rate (pixels where $|d_{\mathrm{pred}} - d_{\mathrm{gt}}| > 2.0$ px). Under additive Gaussian noise ($\sigma = 15$), local StereoBM coverage collapses from 77.6% to 13.0% on the layered scene (and to 23.7% on the constant scene) because window SAD costs fail confidence checks. In contrast, SGBM maintains 81.0% coverage with 6.02% bad-pixel error, demonstrating the stabilizing effect of directional dynamic programming paths.
 
 ---
 
@@ -160,9 +160,10 @@ At native 1.0x resolution on the Jadeplant reference scene:
 
 ### Post-Processing Filter Ablation: Accuracy Versus Completeness
 
-To understand whether sophisticated post-processing filters improve matching, six filtering strategies were tested on Jadeplant (1.0x scale):
+To understand whether sophisticated post-processing filters improve matching, seven filtering configurations were tested on Jadeplant (1.0x scale):
 - `raw`: Unfiltered StereoSGBM output.
-- `median_valid`: $3 \times 3$ median filter applied strictly over valid disparity pixels.
+- `masked_median`: True $3 \times 3$ median filter computed strictly over valid neighborhood disparity pixels without dilation bleed.
+- `dilation_assisted_median`: Morphological maximum dilation assisted $3 \times 3$ median filter.
 - `guided`: Guided image filter using the grayscale left view as structural guide.
 - `joint_bilateral`: Color joint bilateral edge-preserving smoothing.
 - `wls`: Weighted Least Squares disparity filter using left-right consistency.
@@ -177,17 +178,18 @@ Table 3: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x 
 
 | Filter Mode | Bad@2.0 Cond (%) | Bad@2.0 CA (%) | Valid Coverage (%) | Match Latency | Filter Latency | Total Latency |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **raw** | 11.42% | 38.64% | 69.27% | 50.9 ms | **1.2 ms** | **52.2 ms** |
-| **median_valid** | **11.41%** | **38.64%** | **69.27%** | 50.9 ms | 7.7 ms | 58.6 ms |
-| **guided** | 35.67% | 55.44% | 69.27% | 50.9 ms | 34.8 ms | 85.7 ms |
-| **joint_bilateral** | 13.26% | 39.91% | 69.27% | 50.9 ms | 17.6 ms | 68.6 ms |
-| **wls** | 26.89% | 41.90% | 79.46% | 99.3 ms | 28.4 ms | 127.7 ms |
-| **confidence_edge** | **4.41%** | **60.73%** | **41.08%** | 99.3 ms | 30.0 ms | 129.3 ms |
+| **raw** | 11.42% | 38.64% | 69.27% | 39.0 ms | **0.6 ms** | **39.6 ms** |
+| **masked_median** | 11.44% | 38.65% | 69.27% | 39.0 ms | 66.5 ms | 105.5 ms |
+| **dilation_assisted_median** | **11.41%** | **38.64%** | **69.27%** | 39.0 ms | 3.9 ms | 42.9 ms |
+| **guided** | 35.67% | 55.44% | 69.27% | 39.0 ms | 26.8 ms | 65.8 ms |
+| **joint_bilateral** | 13.26% | 39.91% | 69.27% | 39.0 ms | 13.7 ms | 52.7 ms |
+| **wls** | 26.89% | 41.90% | **79.46%** | 62.4 ms | 23.8 ms | 86.2 ms |
+| **confidence_edge** | **4.41%** | **60.73%** | 41.08% | 62.4 ms | 24.2 ms | 86.7 ms |
 
 #### Key Insights on Post-Processing:
 1. **The Conditional Accuracy Fallacy:** `confidence_edge` appears superior if judged strictly by conditional Bad@2 (4.41%). However, it rejects 58.9% of evaluable pixels. Its completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}} = 1 - \mathrm{Cov} + \mathrm{Cov} \cdot \mathrm{Bad}_{\mathrm{valid}}$) jumps to **60.73%**, far worse than raw SGBM (38.64%).
-2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This doubles matching latency from 50.9 ms to 99.3 ms and adds 28.4 ms filter overhead (total 127.7 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%.
-3. **Median Valid Boundary Preservation:** `median_valid` cleans isolated disparity spikes while dilating valid values into immediate invalid neighbors to eliminate zero-bleed corruption at boundaries (11.41% Bad@2 with 7.7 ms filter overhead). Across the full parameter space, smaller block sizes (e.g. bs = 3, 46.2 ms, 7.74% Bad@2) and `confidence_edge` (129.3 ms, 4.41% Bad@2) form the non-dominated Pareto frontier.
+2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This increases matching latency from 39.0 ms to 62.4 ms and adds 23.8 ms filter overhead (total 86.2 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%, though it achieves the highest valid coverage (79.46%).
+3. **Masked Median versus Morphological Dilation:** The true valid-neighbor median filter (`masked_median`) operates strictly on observed valid pixels in each $3 \times 3$ neighborhood, preventing value corruption from unmeasured pixels. On Jadeplant, `masked_median` yields 11.44% Bad@2 while `dilation_assisted_median` yields 11.41% Bad@2 (with 3.9 ms filter latency). Across the full parameter space, multi-objective Pareto analysis across latency, error, and coverage shows that smaller block sizes (e.g. bs = 3, 32.6 ms, 7.74% Bad@2, 70.0% coverage), `wls` (86.2 ms, 26.89% Bad@2, 79.46% coverage), and `confidence_edge` (86.7 ms, 4.41% Bad@2, 41.08% coverage) form the non-dominated Pareto front.
 
 ---
 
@@ -208,9 +210,9 @@ Table 4: Measured Pipeline Presets on 720p Input Images
 
 | Preset | Scale Factor | Disparities | Block Size | Post-Filter | Pipeline Latency | Measured FPS | Jadeplant Bad@2 (Cond / CA) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FAST** | .5\times$ (360p) | 80 px | 5 px | median_valid | 50.3 ms | 19.9 FPS | 21.6% / 46.1% |
-| **BALANCED** | .75\times$ (540p) | 128 px | 5 px | median_valid | 102.8 ms | 9.7 FPS | 16.3% / 43.8% |
-| **QUALITY** | .0\times$ (720p) | 160 px | 5 px | median_valid | 167.7 ms | 6.0 FPS | **10.0% / 37.1%** |
+| **FAST** | $0.5\times$ (360p) | 80 px | 5 px | median_valid | 50.3 ms | 19.9 FPS | 19.4% / 44.5% |
+| **BALANCED** | $0.75\times$ (540p) | 128 px | 5 px | median_valid | 102.8 ms | 9.7 FPS | 14.1% / 42.3% |
+| **QUALITY** | $1.0\times$ (720p) | 160 px | 5 px | median_valid | 167.7 ms | 6.0 FPS | **9.7% / 37.0%** |
 
 These three presets form a strictly monotonic Pareto frontier balancing latency and reconstruction fidelity on standard multi-core CPUs.
 
@@ -244,7 +246,7 @@ Table 5: RealSense Registration and Metric Depth Validation Across Terrains
 | Terrain | Status | SIFT Inliers | Reproj Med (px) | Translation $T$ (m) | Eval Pixels | Ref Cov (%) | Frame Cov (%) | Depth MAE (m) | Depth Med (m) | $\delta < 1.25$ (%) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **puncakTinggi** | **VERIFIED** | 106 | 1.25 px | $[-0.011, -0.035, -0.000]$ | 76,980 | 41.7% | 8.35% | 0.234 m | **0.059 m** | **88.4%** |
-| **puncakWarung** | **OUT_OF_RANGE**| 0 | N/A | N/A | 0 | 0.0% | 0.00% | Unmeasured | Unmeasured | N/A |
+| **puncakWarung** | **OUT_OF_RANGE** (Unmeasured Reference) | 0 | N/A | N/A | 0 | 0.0% | 0.00% | Unmeasured | Unmeasured | N/A |
 | **tanggaBiru** | **VERIFIED** | 77 | 0.73 px | $[-0.026, -0.044, -0.030]$ | 13,759 | 12.7% | 1.49% | 0.500 m | **0.076 m** | 70.5% |
 | **tanggaKuning** | **VERIFIED** | 32 | 1.19 px | $[-0.017, -0.034, -0.013]$ | 38,613 | 28.6% | 4.19% | 0.211 m | **0.061 m** | **88.2%** |
 
@@ -253,7 +255,7 @@ Table 5: RealSense Registration and Metric Depth Validation Across Terrains
 Transferring camera extrinsics $(R, T)$ solved on `puncakTinggi` directly to `tanggaBiru` resulted in an accuracy breakdown: median depth error increased from 0.076 m to 0.181 m, and reprojection residuals climbed to 56.5 px.
 
 Geometric analysis identified two root causes:
-1. **Mechanical Rig Flexure Between Sessions:** Pairwise rotation differences across terrains range from $2.6^\circ$ to $4.7^\circ$, and translation shifts vary by 1.5 cm to 3.5 cm. The tripod bracket underwent physical micro-shifts during transport between field sites.
+1. **Mechanical Rig Flexure Between Sessions (Physical Hypothesis):** Pairwise rotation differences across terrains range from $2.6^\circ$ to $4.7^\circ$, and translation shifts vary by 1.5 cm to 3.5 cm. The tripod bracket likely underwent physical micro-shifts during transport between field sites.
 2. **Geometric Degeneracy in `tanggaBiru`:** SIFT inliers in `tanggaBiru` clustered along a single linear steel railing ($Y$-spread standard deviation of only 9 mm). A collinear feature distribution creates an ill-conditioned PnP null space, rendering extrinsic transfer unreliable.
 
 > [!IMPORTANT]
@@ -261,7 +263,7 @@ Geometric analysis identified two root causes:
 
 ### Far-Field Geometry (`puncakWarung`)
 
-In `puncakWarung`, scene geometry exceeds 15 meters (all detected SIFT keypoints have depths $Z > 15.6$ m). The Intel RealSense D435i active IR emitter operates up to 3–6 meters in daylight; beyond 10 meters, active IR returns drop to zero. StereoSGBM successfully reconstructs the scene, but depth error against RealSense is documented honestly as unmeasured.
+In `puncakWarung`, scene geometry exceeds 15 meters (all detected SIFT keypoints have depths $Z > 15.6$ m). The Intel RealSense D435i active IR emitter operates up to 3-6 meters in daylight; beyond 10 meters, active IR returns drop to zero. StereoSGBM successfully reconstructs the scene, but depth error against RealSense is documented honestly as an unmeasured reference (status: `OUT_OF_RANGE_OR_UNMEASURED_REFERENCE`).
 
 Across the three valid near-field terrains, classical SGBM achieves median metric depth errors of **5.9 cm** (`puncakTinggi`), **7.6 cm** (`tanggaBiru`), and **6.1 cm** (`tanggaKuning`). While `puncakTinggi` (88.4%) and `tanggaKuning` (88.2%) achieve $\delta < 1.25$ above 88%, `tanggaBiru` achieves 70.5% (average 82.4% across the three valid near-field terrains, with `puncakWarung` unmeasured due to distance).
 
@@ -271,7 +273,7 @@ Across the three valid near-field terrains, classical SGBM achieves median metri
 *Figure 7: Cross-dataset generalization. Row A shows Middlebury indoor benchmark scene (Jadeplant). Row B shows outdoor volcanic terrain (puncakTinggi) evaluated against registered RealSense metric depth. [Vector PDF](assets/fig07_cross_dataset.pdf)*
 
 Classical stereo matching requires no domain retraining:
-- In indoor scenes with high-frequency plant foliage and complex occlusions (Row A), SGBM recovers depth boundaries with 7.01 px disparity MAE (0.066 m depth MAE at 0.5x scale).
+- In indoor scenes with high-frequency plant foliage and complex occlusions (Row A), SGBM recovers depth boundaries with 6.61 px disparity MAE (0.062 m depth MAE at 0.5x scale).
 - In outdoor volcanic scenes with rocky gravel, boulders, and harsh shadows (Row B), the same algorithm with calibrated parameters yields 5.89 cm median depth error.
 
 ---

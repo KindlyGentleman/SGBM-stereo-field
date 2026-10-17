@@ -122,3 +122,57 @@ def test_cpu_profiling_runs_and_returns_structure():
     assert "BALANCED" in prof["presets"]
     assert "QUALITY" in prof["presets"]
 
+
+def test_masked_median_vs_dilation_assisted_median_discontinuity():
+    """Verify that masked median considers only valid neighbors without dilation maximum bias."""
+    # Construct a 5x5 map to test the interior 3x3 window around (2, 2)
+    disp = np.full((5, 5), -1.0, dtype=np.float32)
+    # Valid neighbors in 3x3 window around (2, 2):
+    # three pixels with disparity 10.0, two foreground pixels with disparity 20.0, and four invalid (-1.0)
+    disp[2, 2] = 10.0
+    disp[1, 1] = 10.0
+    disp[1, 2] = 10.0
+    disp[3, 2] = 20.0
+    disp[3, 3] = 20.0
+
+    res_masked = optimize.apply_masked_median(disp)
+    res_dilation = optimize.apply_dilation_assisted_median(disp)
+
+    # Valid values in the 3x3 window are [10.0, 10.0, 10.0, 10.0, 20.0] -> true median is 10.0
+    assert np.isclose(res_masked[2, 2], 10.0)
+
+    # In dilation-assisted median, morphological dilation replaces all invalid neighbors in the 3x3 with 20.0 (the max).
+    # Thus the 3x3 window becomes four 10.0s and five 20.0s -> median is 20.0
+    assert np.isclose(res_dilation[2, 2], 20.0)
+
+
+def test_multi_objective_pareto_frontier():
+    """Verify multi-objective Pareto analysis handles 2-obj, 3-obj, and non-finite inputs."""
+    import pandas as pd
+    df = pd.DataFrame([
+        {"cfg": "fast_low_cov", "latency": 10.0, "error": 5.0, "cov": 40.0},
+        {"cfg": "slow_high_cov", "latency": 50.0, "error": 8.0, "cov": 95.0},
+        {"cfg": "dominated_all", "latency": 60.0, "error": 12.0, "cov": 30.0},
+        {"cfg": "nan_latency", "latency": float("nan"), "error": 1.0, "cov": 99.0},
+        {"cfg": "inf_error", "latency": 5.0, "error": float("inf"), "cov": 99.0},
+    ])
+
+    # In 2-obj (latency min, error min):
+    # fast_low_cov dominates slow_high_cov (10 < 50, 5 < 8) and dominated_all
+    p2 = optimize.compute_pareto_frontier(df, objectives=[("latency", "min"), ("error", "min")])
+    assert list(p2) == [True, False, False, False, False]
+
+    # In 3-obj (latency min, error min, cov max):
+    # slow_high_cov has cov 95.0 > 40.0, so it is NOT dominated by fast_low_cov!
+    p3 = optimize.compute_pareto_frontier(
+        df,
+        objectives=[("latency", "min"), ("error", "min"), ("cov", "max")]
+    )
+    assert list(p3) == [True, True, False, False, False]
+
+    # Empty dataframe test
+    empty_df = pd.DataFrame(columns=["latency", "error"])
+    p_empty = optimize.compute_pareto_frontier(empty_df, latency_col="latency", error_col="error")
+    assert len(p_empty) == 0
+    assert p_empty.name == "is_pareto"
+

@@ -52,7 +52,7 @@ plt.rcParams.update({
 # Figure 1: Geometry, Synthetic Scene, and SAD Cost Curve
 # ---------------------------------------------------------------------------
 
-def generate_figure_01_geometry(output_dir: Path = ASSETS_DIR) -> None:
+def generate_figure_01_geometry(output_dir: Path = ASSETS_DIR) -> str:
     """Generate Figure 1: Epipolar geometry, synthetic layered scene, and SAD scanline cost."""
     fig = plt.figure(figsize=(10.5, 6.2), dpi=300)
     gs = fig.add_gridspec(2, 3, width_ratios=[1.3, 1.0, 1.0], height_ratios=[1.0, 1.0], hspace=0.35, wspace=0.28)
@@ -160,18 +160,19 @@ def generate_figure_01_geometry(output_dir: Path = ASSETS_DIR) -> None:
     fig.savefig(output_dir / "fig01_stereo_geometry.pdf")
     plt.close(fig)
     print("Saved Figure 1: assets/fig01_stereo_geometry.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
 
 
 # ---------------------------------------------------------------------------
 # Figure 2: Middlebury 2014 Benchmark Evaluation
 # ---------------------------------------------------------------------------
 
-def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> None:
+def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> str:
     """Generate Figure 2: Middlebury evaluation showing left view, GT, raw, WLS, and error map."""
     sc_dir = field.DEFAULT_MIDDLEBURY_ROOT / "Jadeplant"
     if not sc_dir.exists():
         print("Middlebury Jadeplant scene not found; skipping Figure 2.")
-        return
+        return "SKIPPED_MISSING_MIDDLEBURY"
 
     im0 = cv2.imread(str(sc_dir / "im0.png"))
     im1 = cv2.imread(str(sc_dir / "im1.png"))
@@ -263,17 +264,18 @@ def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> None:
     fig.savefig(output_dir / "fig02_middlebury.pdf")
     plt.close(fig)
     print("Saved Figure 2: assets/fig02_middlebury.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
 
 
 # ---------------------------------------------------------------------------
 # Figure 3: Four Gunung Volcanic Terrains
 # ---------------------------------------------------------------------------
 
-def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> None:
+def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> str:
     """Generate Figure 3: Four Gunung terrains evaluation and failure analysis."""
     if not (field.DEFAULT_GUNUNG_ROOT.exists() and field.DEFAULT_CALIB_PATH.exists()):
         print("Gunung dataset or calibration not found; skipping Figure 3.")
-        return
+        return "SKIPPED_MISSING_FIELD_DATA"
 
     terrains = ["puncakTinggi", "puncakWarung", "tanggaBiru", "tanggaKuning"]
     fig, axs = plt.subplots(2, 2, figsize=(12.5, 7.8), constrained_layout=True)
@@ -388,13 +390,14 @@ def generate_figure_04_optimization(output_dir: Path = ASSETS_DIR) -> None:
     fig.savefig(output_dir / "fig04_optimization.pdf")
     plt.close(fig)
     print("Saved Figure 4: assets/fig04_optimization.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
 
 
 # ---------------------------------------------------------------------------
 # Figure 5: CPU Pareto Frontier and Profiling
 # ---------------------------------------------------------------------------
 
-def generate_figure_05_cpu_pareto(output_dir: Path = ASSETS_DIR) -> None:
+def generate_figure_05_cpu_pareto(output_dir: Path = ASSETS_DIR) -> str:
     """Generate Figure 5: Latency vs accuracy Pareto frontier and threading scaling."""
     params_json = RESULTS_DIR / "best_params.json"
     if not params_json.exists():
@@ -449,43 +452,112 @@ def generate_figure_05_cpu_pareto(output_dir: Path = ASSETS_DIR) -> None:
     fig.savefig(output_dir / "fig05_cpu_pareto.pdf")
     plt.close(fig)
     print("Saved Figure 5: assets/fig05_cpu_pareto.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
 
 
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Figure 6: Tiny CNN Patch Correspondence
 # ---------------------------------------------------------------------------
 
-def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
-    """Generate Figure 6: TinyStereoNet architecture, loss curve, and Conv1 filters."""
+def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> str:
+    """Generate Figure 6: TinyStereoNet architecture, loss curve, and Conv1 filters.
+    
+    Strictly requires genuine training history (cnn_history.csv), trained model
+    checkpoint (tiny_cnn.pt), and verified test metrics (cnn_metrics.json). Never
+    substitutes fabricated loss curves, random weights, or historical constants.
+    """
     try:
         import torch
         import cnn
     except ImportError as e:
         print(f"Skipping Figure 6: Optional ML dependencies not installed ({e}).")
-        return
+        return "SKIPPED_OPTIONAL_DEPENDENCY"
 
     cnn_json = RESULTS_DIR / "cnn_metrics.json"
     if not cnn_json.exists():
-        cnn.run_cnn_experiment(save_json=True)
+        try:
+            cnn.run_cnn_experiment(save_json=True)
+        except Exception as e:
+            print(f"Warning: Failed to execute CNN experiment for Figure 6: {e}; skipping.")
+            return "SKIPPED_MISSING_METRICS"
+
+    if not cnn_json.exists():
+        print("Warning: cnn_metrics.json missing; cannot generate Figure 6 without verified metrics.")
+        return "SKIPPED_MISSING_METRICS"
+
     with open(cnn_json, "r", encoding="utf-8") as f:
         cdata = json.load(f)
 
-    fig = plt.figure(figsize=(10.8, 4.6), constrained_layout=True)
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.2, 1.1, 0.9])
+    # Validate metrics schema strictly without fallback constants (Problem V2-03)
+    try:
+        mad_acc = float(cdata["classical_baseline"]["accuracy"])
+        ms_stats = cdata.get("multi_seed_analysis", {})
+        if "cnn_accuracy_mean" in ms_stats and "cnn_accuracy_std" in ms_stats:
+            cnn_mean = float(ms_stats["cnn_accuracy_mean"])
+            cnn_std = float(ms_stats["cnn_accuracy_std"])
+        else:
+            cnn_mean = float(cdata["tiny_cnn"]["accuracy"])
+            cnn_std = 0.0
+        prim_p = float(cdata["paired_comparison"]["mcnemar_exact_pvalue"])
+        prim_seed = int(cdata["selected_seed"])
+    except (KeyError, TypeError, ValueError) as err:
+        print(f"Warning: cnn_metrics.json missing required metric fields ({err}); skipping Figure 6.")
+        return "SKIPPED_MISSING_METRICS"
 
-    # Subplot (a): Training and Validation Loss Curves
-    ax_a = fig.add_subplot(gs[0, 0])
+    # Enforce genuine training history (Problem V2-01)
     cnn_hist_csv = RESULTS_DIR / "cnn_history.csv"
-    if cnn_hist_csv.exists():
+    if not cnn_hist_csv.exists():
+        print("Warning: cnn_history.csv missing; cannot generate Figure 6 without genuine training history.")
+        return "SKIPPED_MISSING_HISTORY"
+
+    try:
         df_hist = pd.read_csv(cnn_hist_csv)
+        required_cols = {"epoch", "train_loss", "val_loss"}
+        if not required_cols.issubset(df_hist.columns) or len(df_hist) == 0:
+            print("Warning: cnn_history.csv missing required columns or is empty.")
+            return "SKIPPED_INVALID_HISTORY"
+
         epochs = df_hist["epoch"].tolist()
         tr_loss = df_hist["train_loss"].tolist()
         val_loss = df_hist["val_loss"].tolist()
-    else:
-        epochs = list(range(1, 16))
-        tr_loss = [0.44, 0.21, 0.16, 0.13, 0.11, 0.09, 0.08, 0.07, 0.06, 0.05, 0.05, 0.04, 0.04, 0.03, 0.03]
-        val_loss = [0.31, 0.21, 0.18, 0.17, 0.16, 0.16, 0.15, 0.15, 0.15, 0.15, 0.16, 0.16, 0.16, 0.16, 0.16]
 
+        if not (np.isfinite(tr_loss).all() and np.isfinite(val_loss).all()):
+            print("Warning: cnn_history.csv contains non-finite loss values.")
+            return "SKIPPED_INVALID_HISTORY"
+        if len(epochs) > 1 and not all(epochs[i] < epochs[i + 1] for i in range(len(epochs) - 1)):
+            print("Warning: cnn_history.csv epochs are not strictly ascending.")
+            return "SKIPPED_INVALID_HISTORY"
+    except Exception as e:
+        print(f"Warning: Failed reading cnn_history.csv: {e}")
+        return "SKIPPED_INVALID_HISTORY"
+
+    # Enforce trained checkpoint validation (Problem V2-02)
+    model_pt = RESULTS_DIR / "tiny_cnn.pt"
+    if not model_pt.exists():
+        print("Warning: tiny_cnn.pt checkpoint missing; cannot render learned Conv1 kernels.")
+        return "SKIPPED_MISSING_TRAINED_MODEL"
+
+    try:
+        state_dict = torch.load(str(model_pt), map_location="cpu", weights_only=True)
+        if "conv1.weight" not in state_dict:
+            print("Warning: Checkpoint tiny_cnn.pt does not contain conv1.weight.")
+            return "SKIPPED_INVALID_CHECKPOINT"
+        w_tensor = state_dict["conv1.weight"]
+        if w_tensor.shape != (8, 2, 3, 3) or not torch.isfinite(w_tensor).all():
+            print("Warning: Checkpoint conv1.weight has invalid shape or non-finite values.")
+            return "SKIPPED_INVALID_CHECKPOINT"
+        w = w_tensor.detach().cpu().numpy()
+    except Exception as e:
+        print(f"Warning: Failed loading tiny_cnn.pt: {e}")
+        return "SKIPPED_INVALID_CHECKPOINT"
+
+    # Render figure with verified genuine artifacts
+    fig = plt.figure(figsize=(10.8, 4.6), constrained_layout=True)
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.2, 1.1, 0.9])
+
+    # Subplot (a): Training Dynamics
+    ax_a = fig.add_subplot(gs[0, 0])
     ax_a.plot(epochs, tr_loss, "o-", color="#1f77b4", lw=1.4, markersize=4, label="Train Loss")
     ax_a.plot(epochs, val_loss, "s--", color="#d73027", lw=1.4, markersize=4, label="Val Loss")
     ax_a.set_xlabel("Epoch")
@@ -494,16 +566,9 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     ax_a.legend(loc="upper right", frameon=True)
     ax_a.grid(True, alpha=0.3)
 
-    # Subplot (b): Test Accuracy Comparison (Classical MAD vs TinyStereoNet) with full 0-100% axis
+    # Subplot (b): Test Accuracy Comparison
     ax_b = fig.add_subplot(gs[0, 1])
     methods = ["Classical MAD", "TinyStereoNet\n(5 Seeds Mean)"]
-    ms_stats = cdata.get("multi_seed_analysis", {})
-    mad_acc = cdata.get("classical_baseline", {}).get("accuracy", 91.06)
-    cnn_mean = ms_stats.get("cnn_accuracy_mean", cdata.get("tiny_cnn", {}).get("accuracy", 94.31))
-    cnn_std = ms_stats.get("cnn_accuracy_std", 0.70)
-    prim_p = cdata.get("paired_comparison", {}).get("mcnemar_exact_pvalue", 0.0074)
-    prim_seed = cdata.get("selected_seed", 202)
-
     accs = [mad_acc, cnn_mean]
     errs = [0.0, cnn_std]
     colors = ["#7570b3", "#2ca02c"]
@@ -524,13 +589,6 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     ax_c.axis("off")
     ax_c.set_title("(c) Learned Conv1 Kernels", fontweight="bold")
 
-    import torch
-    net = cnn.TinyStereoNet()
-    model_pt = RESULTS_DIR / "tiny_cnn.pt"
-    if model_pt.exists():
-        net.load_state_dict(torch.load(str(model_pt), map_location="cpu", weights_only=True))
-    w = net.conv1.weight.detach().numpy()
-
     grid = np.zeros((4 * 4 + 5, 2 * 4 + 3))
     for idx in range(8):
         row = idx // 2
@@ -546,86 +604,118 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     fig.savefig(output_dir / "fig06_cnn.pdf")
     plt.close(fig)
     print("Saved Figure 6: assets/fig06_cnn.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
 
 
 # ---------------------------------------------------------------------------
 # Figure 7: Cross-Dataset Generalization (Middlebury + Gunung)
 # ---------------------------------------------------------------------------
 
-def generate_figure_07_cross_dataset(output_dir: Path = ASSETS_DIR) -> None:
-    """Generate Figure 7: Cross-dataset validation: Row A Middlebury, Row B Gunung."""
+def generate_figure_07_cross_dataset(output_dir: Path = ASSETS_DIR) -> str:
+    """Generate Figure 7: Cross-dataset validation: Row A Middlebury, Row B Gunung.
+    
+    Requires complete inputs for both Middlebury and Gunung. If either dataset is
+    missing, preserves the existing historical figure without overwriting it with
+    an incomplete or half-empty visual.
+    """
+    sc_dir = field.DEFAULT_MIDDLEBURY_ROOT / "Jadeplant"
+    has_middlebury = (
+        sc_dir.exists()
+        and (sc_dir / "im0.png").exists()
+        and (sc_dir / "im1.png").exists()
+        and (sc_dir / "disp0GT.pfm").exists()
+        and (sc_dir / "mask0nocc.png").exists()
+    )
+
+    pt_dir = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi"
+    has_gunung = (
+        field.DEFAULT_GUNUNG_ROOT.exists()
+        and field.DEFAULT_CALIB_PATH.exists()
+        and pt_dir.exists()
+        and (pt_dir / "stereo" / "left_0000.png").exists()
+        and (pt_dir / "realsense" / "depth_0000.png").exists()
+    )
+
+    if not has_middlebury:
+        print("Middlebury Jadeplant dataset missing; preserving existing Figure 7 without overwrite.")
+        return "SKIPPED_MISSING_MIDDLEBURY"
+
+    if not has_gunung:
+        print("Gunung field data or calibration missing locally; preserving historical Figure 7 without overwrite.")
+        return "SKIPPED_MISSING_FIELD_DATA"
+
+    # Both datasets present: produce complete 8-panel figure
     fig, axs = plt.subplots(2, 4, figsize=(13.5, 6.8), constrained_layout=True)
 
     # Row A: Middlebury Jadeplant
-    sc_dir = field.DEFAULT_MIDDLEBURY_ROOT / "Jadeplant"
-    if sc_dir.exists():
-        im0 = cv2.imread(str(sc_dir / "im0.png"))
-        im1 = cv2.imread(str(sc_dir / "im1.png"))
-        gt = stereo.load_pfm(str(sc_dir / "disp0GT.pfm"))
-        mask = cv2.imread(str(sc_dir / "mask0nocc.png"), cv2.IMREAD_GRAYSCALE) == 255
+    im0 = cv2.imread(str(sc_dir / "im0.png"))
+    im1 = cv2.imread(str(sc_dir / "im1.png"))
+    gt = stereo.load_pfm(str(sc_dir / "disp0GT.pfm"))
+    mask = cv2.imread(str(sc_dir / "mask0nocc.png"), cv2.IMREAD_GRAYSCALE) == 255
 
-        m = stereo.create_sgbm_matcher(num_disparities=160, block_size=7)
-        disp, _ = stereo.compute_disparity_sgbm(im0, im1, m)
-        err = np.where(mask & (disp > 0), np.abs(disp - gt), np.nan)
+    m = stereo.create_sgbm_matcher(num_disparities=160, block_size=7)
+    disp, _ = stereo.compute_disparity_sgbm(im0, im1, m)
+    err = np.where(mask & (disp > 0), np.abs(disp - gt), np.nan)
 
-        axs[0, 0].imshow(cv2.cvtColor(im0, cv2.COLOR_BGR2RGB))
-        axs[0, 0].set_title("Row A: Middlebury Left $I_0$", fontweight="bold")
-        axs[0, 0].axis("off")
+    axs[0, 0].imshow(cv2.cvtColor(im0, cv2.COLOR_BGR2RGB))
+    axs[0, 0].set_title("Row A: Middlebury Left $I_0$", fontweight="bold")
+    axs[0, 0].axis("off")
 
-        gt_plot = np.where(mask, gt, np.nan)
-        axs[0, 1].imshow(gt_plot, cmap="viridis", vmin=10, vmax=140)
-        axs[0, 1].set_title(r"Reference Disparity $d_{\mathrm{gt}}$", fontweight="bold")
-        axs[0, 1].axis("off")
+    gt_plot = np.where(mask, gt, np.nan)
+    axs[0, 1].imshow(gt_plot, cmap="viridis", vmin=10, vmax=140)
+    axs[0, 1].set_title(r"Reference Disparity $d_{\mathrm{gt}}$", fontweight="bold")
+    axs[0, 1].axis("off")
 
-        disp_plot = np.where(disp > 0, disp, np.nan)
-        axs[0, 2].imshow(disp_plot, cmap="viridis", vmin=10, vmax=140)
-        axs[0, 2].set_title("Predicted SGBM Disparity", fontweight="bold")
-        axs[0, 2].axis("off")
+    disp_plot = np.where(disp > 0, disp, np.nan)
+    axs[0, 2].imshow(disp_plot, cmap="viridis", vmin=10, vmax=140)
+    axs[0, 2].set_title("Predicted SGBM Disparity", fontweight="bold")
+    axs[0, 2].axis("off")
 
-        im_err = axs[0, 3].imshow(err, cmap="magma", vmin=0, vmax=6)
-        axs[0, 3].set_title(r"Absolute Error $|\hat{d} - d_{\mathrm{gt}}|$", fontweight="bold")
-        axs[0, 3].axis("off")
-        fig.colorbar(im_err, ax=axs[0, 3], fraction=0.046, pad=0.04, label="Error (px)")
+    im_err = axs[0, 3].imshow(err, cmap="magma", vmin=0, vmax=6)
+    axs[0, 3].set_title(r"Absolute Error $|\hat{d} - d_{\mathrm{gt}}|$", fontweight="bold")
+    axs[0, 3].axis("off")
+    fig.colorbar(im_err, ax=axs[0, 3], fraction=0.046, pad=0.04, label="Error (px)")
 
     # Row B: Gunung puncakTinggi
-    if field.DEFAULT_GUNUNG_ROOT.exists() and field.DEFAULT_CALIB_PATH.exists():
-        rec, rect_l, ref_d, st_d = field.evaluate_gunung_terrain("puncakTinggi")
+    rec, rect_l, ref_d, st_d = field.evaluate_gunung_terrain("puncakTinggi")
 
-        axs[1, 0].imshow(cv2.cvtColor(rect_l, cv2.COLOR_BGR2RGB))
-        axs[1, 0].set_title("Row B: Gunung puncakTinggi Left", fontweight="bold")
-        axs[1, 0].axis("off")
+    axs[1, 0].imshow(cv2.cvtColor(rect_l, cv2.COLOR_BGR2RGB))
+    axs[1, 0].set_title("Row B: Gunung puncakTinggi Left", fontweight="bold")
+    axs[1, 0].axis("off")
 
-        ref_plot = np.where((ref_d > 0.4) & (ref_d < 3.5), ref_d, np.nan)
-        axs[1, 1].imshow(ref_plot, cmap="turbo", vmin=0.4, vmax=3.5)
-        axs[1, 1].set_title("Registered RealSense Depth (m)", fontweight="bold")
-        axs[1, 1].axis("off")
+    ref_plot = np.where((ref_d > 0.4) & (ref_d < 3.5), ref_d, np.nan)
+    axs[1, 1].imshow(ref_plot, cmap="turbo", vmin=0.4, vmax=3.5)
+    axs[1, 1].set_title("Registered RealSense Depth (m)", fontweight="bold")
+    axs[1, 1].axis("off")
 
-        st_plot = np.where((st_d > 0.4) & (st_d < 3.5), st_d, np.nan)
-        axs[1, 2].imshow(st_plot, cmap="turbo", vmin=0.4, vmax=3.5)
-        axs[1, 2].set_title("Predicted Stereo Depth (m)", fontweight="bold")
-        axs[1, 2].axis("off")
+    st_plot = np.where((st_d > 0.4) & (st_d < 3.5), st_d, np.nan)
+    axs[1, 2].imshow(st_plot, cmap="turbo", vmin=0.4, vmax=3.5)
+    axs[1, 2].set_title("Predicted Stereo Depth (m)", fontweight="bold")
+    axs[1, 2].axis("off")
 
-        diff = np.where((ref_plot > 0) & (st_plot > 0), np.abs(st_plot - ref_plot), np.nan)
-        im_d_err = axs[1, 3].imshow(diff, cmap="magma", vmin=0.0, vmax=0.5)
-        axs[1, 3].set_title(r"Depth Error $|Z_{\mathrm{st}} - Z_{\mathrm{rs}}|$", fontweight="bold")
-        axs[1, 3].axis("off")
-        fig.colorbar(im_d_err, ax=axs[1, 3], fraction=0.046, pad=0.04, label="Error (m)")
+    diff = np.where((ref_plot > 0) & (st_plot > 0), np.abs(st_plot - ref_plot), np.nan)
+    im_d_err = axs[1, 3].imshow(diff, cmap="magma", vmin=0.0, vmax=0.5)
+    axs[1, 3].set_title(r"Depth Error $|Z_{\mathrm{st}} - Z_{\mathrm{rs}}|$", fontweight="bold")
+    axs[1, 3].axis("off")
+    fig.colorbar(im_d_err, ax=axs[1, 3], fraction=0.046, pad=0.04, label="Error (m)")
 
     fig.savefig(output_dir / "fig07_cross_dataset.png")
     fig.savefig(output_dir / "fig07_cross_dataset.pdf")
     plt.close(fig)
     print("Saved Figure 7: assets/fig07_cross_dataset.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
+
 
 
 # ---------------------------------------------------------------------------
 # Animated Looping GIF
 # ---------------------------------------------------------------------------
 
-def generate_hero_loop_gif(output_dir: Path = ASSETS_DIR) -> None:
+def generate_hero_loop_gif(output_dir: Path = ASSETS_DIR) -> str:
     """Generate looping GIF assets/stereo_loop.gif cycling across terrains and presets."""
     if not (field.DEFAULT_GUNUNG_ROOT.exists() and field.DEFAULT_CALIB_PATH.exists()):
-        print("Gunung data or calibration missing; skipping hero loop GIF.")
-        return
+        print("Gunung data or calibration missing; preserving historical hero loop GIF.")
+        return "SKIPPED_MISSING_FIELD_DATA"
 
     terrains = ["puncakTinggi", "tanggaBiru", "tanggaKuning"]
     calib = stereo.load_calibration(str(field.DEFAULT_CALIB_PATH))
@@ -685,19 +775,30 @@ def generate_hero_loop_gif(output_dir: Path = ASSETS_DIR) -> None:
             loop=0
         )
         print(f"Saved hero looping GIF: {gif_path}")
+        return "GENERATED_VERIFIED_INPUTS"
+    return "SKIPPED_MISSING_FIELD_DATA"
 
 
-def generate_all_figures() -> None:
-    """Generate all publication assets (Figures 1-7 + stereo_loop.gif)."""
-    generate_figure_01_geometry()
-    generate_figure_02_middlebury()
-    generate_figure_03_gunung()
-    generate_figure_04_optimization()
-    generate_figure_05_cpu_pareto()
-    generate_figure_06_cnn()
-    generate_figure_07_cross_dataset()
-    generate_hero_loop_gif()
+def generate_all_figures(output_dir: Path = ASSETS_DIR) -> Dict[str, str]:
+    """Generate all publication assets (Figures 1-7 + stereo_loop.gif) and return status ledger."""
+    statuses = {
+        "fig01_stereo_geometry": generate_figure_01_geometry(output_dir),
+        "fig02_middlebury": generate_figure_02_middlebury(output_dir),
+        "fig03_gunung": generate_figure_03_gunung(output_dir),
+        "fig04_optimization": generate_figure_04_optimization(output_dir),
+        "fig05_cpu_pareto": generate_figure_05_cpu_pareto(output_dir),
+        "fig06_cnn": generate_figure_06_cnn(output_dir),
+        "fig07_cross_dataset": generate_figure_07_cross_dataset(output_dir),
+        "stereo_loop_gif": generate_hero_loop_gif(output_dir)
+    }
+    print("\n" + "=" * 50)
+    print("FIGURE GENERATION SUMMARY:")
+    for fig_id, status in statuses.items():
+        print(f"  {fig_id:<25}: {status}")
+    print("=" * 50)
+    return statuses
 
 
 if __name__ == "__main__":
     generate_all_figures()
+

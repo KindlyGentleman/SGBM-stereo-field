@@ -231,6 +231,14 @@ def run_middlebury_benchmark(
         res = evaluate_middlebury_scene(sc, scale=scale, filter_func=filter_func)
         rows.append(res)
 
+    if not rows:
+        return pd.DataFrame(columns=[
+            "scene", "scale", "width", "height", "ndisp", "runtime_ms",
+            "bad1_pct", "bad2_pct", "bad4_pct", "bad2_ca_pct",
+            "disp_mae_px", "disp_rmse_px", "coverage_pct",
+            "depth_mae_m", "depth_rmse_m"
+        ])
+
     df = pd.DataFrame(rows)
     return df
 

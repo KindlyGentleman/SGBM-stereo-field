@@ -232,7 +232,61 @@ python reproduce.py --profile
 python visualize.py
 ```
 
-### Final Quality Assurance Sign-Off:
+### Final Quality Assurance Sign-Off (Round 1):
 - Unit test pass rate: **35 / 35 passed** (100%).
 - Code formatting and anti-slop compliance: **Strict** (zero em dashes in prose, no promotional hype, clickable markdown links for all code files and symbols).
 - Provenance integrity: Historical CSV files preserved; zero unmeasured metrics labeled as verified; all claims backed by numerical code evidence.
+
+---
+
+## 6. Round 2 Independent Re-Audit and Verification Sign-Off (MASTER PROMPT V2)
+
+**Audit Phase:** Round 2 Independent Integrity Audit, Repair, Reproduction, and Verification  
+**Audited Commit:** `f9eebaae79ada32acf8744e366c705231f7daedc` (Branch: `main`)  
+**Status:** ALL ISSUES RESOLVED AND VERIFIED  
+
+### 6.1 Scientific Visualization Integrity Repairs (P0)
+
+1. **Figure 6 Synthetic Fallback Elimination (ISS2-V01, ISS2-V02, ISS2-V03):**
+   - Eliminated hardcoded loss curves (`tr_loss = [0.44...]`, `val_loss = [0.31...]`) in `visualize.generate_figure_06_cnn()`. The function now strictly validates `results/cnn_history.csv` (non-empty, finite, ascending epochs) and skips with `SKIPPED_MISSING_HISTORY` if missing.
+   - Enforced strict CPU checkpoint validation for `results/tiny_cnn.pt` (shape `(8, 2, 3, 3)`, finite weights) before plotting Conv1 kernels, eliminating uninitialized weight visualization.
+   - Eliminated fallback default constants (`accuracy=91.06`, `p_value=0.0074`, `selected_seed=202`), requiring strict schema compliance in `results/cnn_metrics.json`.
+2. **Figure 7 Cross-Dataset Asset Restoration & Overwrite Guard (ISS2-V04):**
+   - Restored the authentic historical complete 8-panel `assets/fig07_cross_dataset.png` (4.55 MB) and `assets/fig07_cross_dataset.pdf` (4.20 MB) from commit `6a20e04`.
+   - Updated `generate_figure_07_cross_dataset()` in `visualize.py` to require both Middlebury and Gunung datasets, skipping with status `SKIPPED_MISSING_FIELD_DATA` without overwriting Figure 7 with empty panels when field data is absent.
+   - Added structured return status strings to all figure functions in `visualize.py`; `generate_all_figures()` prints and returns a dictionary ledger.
+
+### 6.2 Scientific Methodology and Benchmark Repairs (P1)
+
+1. **Procedural Synthetic Benchmark Regeneration (ISS2-S01):**
+   - Preserved pre-repair baseline in `results/synthetic_historical_pre_repair.csv`.
+   - Re-executed `python reproduce.py --synthetic` using the corrected left-edge boundary mask (`stereo.py:70`). Regenerated `results/synthetic.csv`.
+   - Reconciled Table 1 in `README.md`: Constant Clean StereoSGBM coverage increased from 84.21% to 89.37%, Bad@2 is 0.51%, and completeness-aware Bad@2 improved from 15.79% to 11.09%.
+2. **Validity-Aware Masked Median Filter (ISS2-O01):**
+   - In `optimize.py`, implemented `apply_masked_median()`: a true 3x3 valid-neighbor median filter using vectorized neighbor shifts and sorting, completely eliminating morphological dilation bias near depth discontinuities.
+   - Preserved the morphological dilation approach as `apply_dilation_assisted_median()`.
+   - Verified that on a hand-crafted depth discontinuity patch, `apply_masked_median()` computes the true valid median (10.0) whereas `apply_dilation_assisted_median()` is biased to 20.0 by maximum dilation.
+3. **Multi-Objective Pareto Analysis (ISS2-O02):**
+   - Generalized `compute_pareto_frontier()` in `optimize.py` to evaluate arbitrary objective lists, arbitrary minimization/maximization directions (strings, tuples, or bools), and strict non-finite (NaN, inf) rejection.
+   - Updated `run_parameter_and_filter_search()` in `optimize.py` to benchmark both median filter variants and compute `is_pareto_2obj`, `is_pareto_3obj` (latency, Bad@2, coverage), `is_pareto_ca`, and `is_pareto`.
+   - Regenerated `results/optimization.csv` (11 rows) and updated Table 3 in `README.md`.
+4. **Reproduction Runner Hardening (ISS2-R01, ISS2-R02):**
+   - In `reproduce.py`, updated `run_middlebury_benchmark()` to validate scene discovery; returns empty typed DataFrame without KeyError if directory is empty, preserving historical results.
+   - Updated `run_full_suite()` to record and print a structured execution summary ledger across all 7 tasks (`PASS`, `FAIL`, `SKIPPED_OPTIONAL`, `BLOCKED_BY_DATA`).
+5. **Documentation and Claim Reconciliation (ISS2-D01, ISS2-D02, ISS2-F01):**
+   - Synchronized `README.md` Table 4 with `results/best_params.json` (FAST 19.4% / 44.5%, BALANCED 14.1% / 42.3%, QUALITY 9.7% / 37.0%) and fixed malformed LaTeX scale factors (`$0.5\times$`, `$0.75\times$`, `$1.0\times$`).
+   - Updated stale Jadeplant MAE in `README.md` from 7.01 px / 0.066 m to 6.61 px / 0.062 m.
+   - Qualified `puncakWarung` status as `OUT_OF_RANGE_OR_UNMEASURED_REFERENCE` and ensured mechanical rig flexure statements remain explicit physical hypotheses.
+
+### 6.3 Test Suite Expansion and Verification
+
+The test suite was expanded from 35 to 45 unit tests across 5 test modules:
+- `tests/test_field.py`: Replaced silent conditionals with `pytest.skip()`; added `test_gunung_out_of_range_and_unmeasured_logic()` and `test_middlebury_empty_directory_handling()`.
+- `tests/test_optimization.py`: Added `test_masked_median_vs_dilation_assisted_median_discontinuity()` and `test_multi_objective_pareto_frontier()`.
+- `tests/test_integrity.py`: Added 5 regression tests covering Figure 6 missing history/weights/metrics rejection, Figure 7 non-overwrite preservation, and runner empty-directory handling.
+
+**Execution Results:**
+- Pytest suite: **43 passed, 2 skipped** (the 2 data-dependent Gunung field tests that require external field raw imagery, which are now properly skipped with descriptive messages instead of passing silently).
+- Quick verification (`python reproduce.py --quick`): **PASSED** (< 10 seconds).
+- Figure generation (`python visualize.py`): **PASSED** (exit code 0; verified inputs generated, historical field assets preserved).
+- Anti-slop compliance: **STRICT** (zero em dashes in prose or markdown, clean scientific terminology, no promotional hype).

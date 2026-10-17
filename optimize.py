@@ -26,6 +26,87 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # Filter Benchmark Suite
 # ---------------------------------------------------------------------------
 
+def apply_masked_median(
+    disp_raw: np.ndarray,
+    valid_mask: Optional[np.ndarray] = None,
+    preserve_invalid: bool = True
+) -> np.ndarray:
+    """Apply genuine 3x3 valid-neighbor median filter to disparity map.
+
+    Unlike morphological dilation followed by median blur, this function only
+    considers finite, valid disparity neighbors. Invalid pixels do not participate
+    or bias the median value near depth boundaries.
+
+    Args:
+        disp_raw: Input float or integer disparity map.
+        valid_mask: Optional boolean mask of valid disparity pixels (disp >= 0 and finite).
+        preserve_invalid: If True, positions that were invalid in disp_raw remain -1.0.
+
+    Returns:
+        Filtered float32 disparity map with valid-neighbor median values.
+    """
+    d_in = disp_raw.astype(np.float32)
+    if valid_mask is None:
+        mask = (d_in >= 0.0) & np.isfinite(d_in)
+    else:
+        mask = valid_mask.astype(bool) & (d_in >= 0.0) & np.isfinite(d_in)
+
+    h, w = d_in.shape
+    d_pad = np.pad(d_in, 1, mode="constant", constant_values=np.nan)
+    m_pad = np.pad(mask, 1, mode="constant", constant_values=False)
+
+    shifts = []
+    counts = np.zeros((h, w), dtype=np.int32)
+    for dy in range(3):
+        for dx in range(3):
+            v = d_pad[dy:dy + h, dx:dx + w]
+            m = m_pad[dy:dy + h, dx:dx + w]
+            shifts.append(np.where(m, v, np.inf))
+            counts += m.astype(np.int32)
+
+    stack = np.stack(shifts, axis=0)
+    sorted_stack = np.sort(stack, axis=0)
+
+    filtered = np.full((h, w), -1.0, dtype=np.float32)
+
+    for k in range(1, 10):
+        k_mask = (counts == k)
+        if not np.any(k_mask):
+            continue
+        if k % 2 == 1:
+            filtered[k_mask] = sorted_stack[(k - 1) // 2, k_mask]
+        else:
+            filtered[k_mask] = 0.5 * (sorted_stack[(k // 2) - 1, k_mask] + sorted_stack[k // 2, k_mask])
+
+    if preserve_invalid:
+        filtered[~mask] = -1.0
+
+    return filtered
+
+
+def apply_dilation_assisted_median(
+    disp_raw: np.ndarray,
+    valid_mask: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """Apply morphological dilation followed by 3x3 median blur.
+
+    Dilates valid values into adjacent invalid pixels before median filtering.
+    Useful for removing isolated noise spikes, but introduces maximum values
+    into invalid pixels and may bias depth boundaries.
+    """
+    d_in = disp_raw.astype(np.float32)
+    if valid_mask is None:
+        mask = (d_in >= 0.0) & np.isfinite(d_in)
+    else:
+        mask = valid_mask.astype(bool) & (d_in >= 0.0) & np.isfinite(d_in)
+
+    d_filled = np.where(mask, d_in, 0.0).astype(np.float32)
+    d_dilated = cv2.dilate(d_filled, np.ones((3, 3), np.uint8))
+    d_prep = np.where(mask, d_in, d_dilated)
+    med = cv2.medianBlur(d_prep, 3)
+    return np.where(mask, med, -1.0)
+
+
 def apply_filter(
     filter_name: str,
     disp_raw: np.ndarray,
@@ -37,7 +118,8 @@ def apply_filter(
 
     Filters:
     - 'raw': Raw SGBM output without modification.
-    - 'median_valid': 3x3 median blur restricted to valid pixels.
+    - 'masked_median' / 'median_valid': Genuine 3x3 valid-neighbor median filter.
+    - 'dilation_assisted_median': Morphological dilation into invalid border pixels followed by median blur.
     - 'guided': Guided filter using grayscale left image as structural guide.
     - 'joint_bilateral': Joint bilateral filter with color left image guidance.
     - 'wls': Weighted Least Squares disparity filter using left-right consistency.
@@ -49,13 +131,11 @@ def apply_filter(
     if name in ["raw", "none", "f0_raw"]:
         return disp_raw.copy()
 
-    elif name in ["median_valid", "f2_median", "median"]:
-        # Dilate valid values into immediate invalid neighbors to prevent zero-bleed at borders
-        d_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
-        d_dilated = cv2.dilate(d_filled, np.ones((3, 3), np.uint8))
-        d_prep = np.where(valid_mask, disp_raw, d_dilated)
-        med = cv2.medianBlur(d_prep, 3)
-        return np.where(valid_mask, med, -1.0)
+    elif name in ["masked_median", "median_valid", "f2_median", "median"]:
+        return apply_masked_median(disp_raw, valid_mask=valid_mask)
+
+    elif name in ["dilation_assisted_median", "dilation_median", "median_dilated"]:
+        return apply_dilation_assisted_median(disp_raw, valid_mask=valid_mask)
 
     elif name in ["guided", "f3_guided"]:
         gray = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY) if left_img.ndim == 3 else left_img
@@ -312,45 +392,100 @@ def run_stereo_pipeline(
 
 def compute_pareto_frontier(
     df: pd.DataFrame,
+    objectives: Optional[List[str]] = None,
+    maximize: Optional[List[bool]] = None,
     latency_col: str = "total_ms",
     error_col: str = "bad2_pct",
     minimize_latency: bool = True,
     minimize_error: bool = True
 ) -> pd.Series:
-    """Compute boolean mask of non-dominated Pareto configurations.
+    """Compute boolean mask of non-dominated Pareto configurations across arbitrary objectives.
 
     A configuration A dominates B if:
-    1. A is no worse than B in both latency and error.
-    2. A is strictly better than B in at least one metric.
+    1. A is no worse than B across all evaluated objectives.
+    2. A is strictly better than B in at least one objective.
+
+    Configurations with non-finite values (NaN, inf) are treated as dominated (False).
+
+    Args:
+        df: Input DataFrame containing evaluated metrics.
+        objectives: Optional list of objective column names. Defaults to [latency_col, error_col].
+        maximize: Optional list of booleans indicating maximization (True) or minimization (False).
+        latency_col: Backward-compatible column name for latency.
+        error_col: Backward-compatible column name for error.
+        minimize_latency: Backward-compatible flag for latency minimization.
+        minimize_error: Backward-compatible flag for error minimization.
 
     Returns:
         Boolean Series with True for non-dominated (Pareto-optimal) points.
     """
-    is_pareto = []
-    n = len(df)
-    latencies = df[latency_col].values
-    errors = df[error_col].values
+    if df.empty:
+        return pd.Series([], dtype=bool, name="is_pareto", index=df.index)
+
+    if objectives is None:
+        obj_cols = [latency_col, error_col]
+        max_dirs = [not minimize_latency, not minimize_error]
+    else:
+        obj_cols = []
+        max_dirs = []
+        for i, item in enumerate(objectives):
+            if isinstance(item, (tuple, list)):
+                col = item[0]
+                direction = item[1]
+                obj_cols.append(col)
+                if isinstance(direction, str):
+                    max_dirs.append(direction.lower().startswith("max"))
+                else:
+                    max_dirs.append(bool(direction))
+            else:
+                col = item
+                obj_cols.append(col)
+                if maximize is not None and i < len(maximize):
+                    max_dirs.append(bool(maximize[i]))
+                else:
+                    col_lower = str(col).lower()
+                    max_dirs.append("cov" in col_lower or "acc" in col_lower or "fps" in col_lower)
+
+    data = []
+    for col in obj_cols:
+        if col not in df.columns:
+            raise KeyError(f"Objective column '{col}' not found in DataFrame.")
+        data.append(pd.to_numeric(df[col], errors="coerce").values)
+
+    mat = np.array(data, dtype=np.float64)
+    n_obj, n = mat.shape
+    is_finite = np.all(np.isfinite(mat), axis=0)
+    is_pareto = np.zeros(n, dtype=bool)
 
     for i in range(n):
-        l_i = latencies[i]
-        e_i = errors[i]
+        if not is_finite[i]:
+            is_pareto[i] = False
+            continue
+
         dominated = False
+        val_i = mat[:, i]
+
         for j in range(n):
-            if i == j:
+            if i == j or not is_finite[j]:
                 continue
-            l_j = latencies[j]
-            e_j = errors[j]
+            val_j = mat[:, j]
 
-            better_or_equal_lat = (l_j <= l_i) if minimize_latency else (l_j >= l_i)
-            better_or_equal_err = (e_j <= e_i) if minimize_error else (e_j >= e_i)
+            better_or_equal = np.empty(n_obj, dtype=bool)
+            strictly_better = np.empty(n_obj, dtype=bool)
 
-            strictly_better_lat = (l_j < l_i) if minimize_latency else (l_j > l_i)
-            strictly_better_err = (e_j < e_i) if minimize_error else (e_j > e_i)
+            for k in range(n_obj):
+                if max_dirs[k]:
+                    better_or_equal[k] = val_j[k] >= val_i[k]
+                    strictly_better[k] = val_j[k] > val_i[k]
+                else:
+                    better_or_equal[k] = val_j[k] <= val_i[k]
+                    strictly_better[k] = val_j[k] < val_i[k]
 
-            if better_or_equal_lat and better_or_equal_err and (strictly_better_lat or strictly_better_err):
+            if np.all(better_or_equal) and np.any(strictly_better):
                 dominated = True
                 break
-        is_pareto.append(not dominated)
+
+        is_pareto[i] = not dominated
 
     return pd.Series(is_pareto, index=df.index, name="is_pareto")
 
@@ -400,7 +535,15 @@ def run_parameter_and_filter_search(
     disp_l = dl_raw.astype(np.float32) / 16.0
     disp_l[dl_raw <= -16] = -1.0
 
-    filter_names = ["raw", "median_valid", "guided", "joint_bilateral", "wls", "confidence_edge"]
+    filter_names = [
+        "raw",
+        "masked_median",
+        "dilation_assisted_median",
+        "guided",
+        "joint_bilateral",
+        "wls",
+        "confidence_edge"
+    ]
     rows = []
 
     for fname in filter_names:
@@ -459,10 +602,15 @@ def run_parameter_and_filter_search(
         })
 
     df = pd.DataFrame(rows)
-    df["is_pareto"] = compute_pareto_frontier(df, latency_col="total_ms", error_col="bad2_pct")
+    df["is_pareto_2obj"] = compute_pareto_frontier(df, objectives=["total_ms", "bad2_pct"], maximize=[False, False])
+    df["is_pareto_3obj"] = compute_pareto_frontier(df, objectives=["total_ms", "bad2_pct", "coverage_pct"], maximize=[False, False, True])
+    df["is_pareto_ca"] = compute_pareto_frontier(df, objectives=["total_ms", "bad2_ca_pct"], maximize=[False, False])
+    df["is_pareto"] = df["is_pareto_2obj"]
+
     if save_csv:
         csv_path = RESULTS_DIR / "optimization.csv"
         df.to_csv(csv_path, index=False)
+        print(f"Saved optimization search results to: {csv_path}")
 
     return df
 

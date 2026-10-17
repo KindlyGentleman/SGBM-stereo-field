@@ -238,7 +238,24 @@ def run_middlebury_benchmark(save_csv: bool = True) -> pd.DataFrame:
     print("EXPERIMENT 2: MIDDLEBURY 2014 BENCHMARK EVALUATION")
     print("=" * 76)
 
-    df = field.run_middlebury_benchmark(field.DEFAULT_MIDDLEBURY_ROOT, scale=0.5)
+    root = field.DEFAULT_MIDDLEBURY_ROOT
+    all_scenes = field.discover_middlebury_scenes(root)
+    if not all_scenes:
+        print(f"  Notice: Middlebury dataset not found or contains no valid scenes at {root}.")
+        print("  Preserving historical committed results in results/middlebury.csv without overwriting.")
+        csv_path = RESULTS_DIR / "middlebury.csv"
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            print(df[["scene", "bad2_pct", "disp_mae_px", "depth_mae_m", "coverage_pct", "runtime_ms"]].to_string(index=False))
+            return df
+        return pd.DataFrame(columns=[
+            "scene", "scale", "width", "height", "ndisp", "runtime_ms",
+            "bad1_pct", "bad2_pct", "bad4_pct", "bad2_ca_pct",
+            "disp_mae_px", "disp_rmse_px", "coverage_pct",
+            "depth_mae_m", "depth_rmse_m"
+        ])
+
+    df = field.run_middlebury_benchmark(root, scale=0.5)
     print(f"Evaluated {len(df)} Middlebury scenes at 0.5x scale:")
     print(df[["scene", "bad2_pct", "disp_mae_px", "depth_mae_m", "coverage_pct", "runtime_ms"]].to_string(index=False))
 
@@ -355,38 +372,190 @@ def run_cnn_benchmark(save_json: bool = True) -> Optional[Dict[str, Any]]:
     return metrics
 
 
-def run_full_suite() -> None:
-    """Execute all benchmarks sequentially and generate all publication assets."""
+def run_full_suite() -> Dict[str, Any]:
+    """Execute all benchmarks sequentially and record structured execution status."""
     print("*" * 76)
     print("STARTING FULL REPRODUCIBILITY SUITE")
     print("*" * 76)
 
-    run_synthetic_benchmark()
-    run_middlebury_benchmark()
-    run_gunung_benchmark()
-    run_optimization_benchmark()
-    run_profiling_benchmark()
-    run_cnn_benchmark()
+    status_records: List[Dict[str, str]] = []
+
+    # 1. Synthetic benchmark
+    try:
+        df_syn = run_synthetic_benchmark()
+        status_records.append({
+            "task": "1. Synthetic Benchmark",
+            "status": "PASS",
+            "details": f"Generated {len(df_syn)} records -> results/synthetic.csv"
+        })
+    except Exception as e:
+        status_records.append({
+            "task": "1. Synthetic Benchmark",
+            "status": "FAIL",
+            "details": str(e)
+        })
+
+    # 2. Middlebury benchmark
+    try:
+        all_scenes = field.discover_middlebury_scenes(field.DEFAULT_MIDDLEBURY_ROOT)
+        df_mid = run_middlebury_benchmark()
+        if not all_scenes:
+            status_records.append({
+                "task": "2. Middlebury Benchmark",
+                "status": "BLOCKED_BY_DATA",
+                "details": f"Missing scenes at {field.DEFAULT_MIDDLEBURY_ROOT}; preserved historical results/middlebury.csv"
+            })
+        else:
+            status_records.append({
+                "task": "2. Middlebury Benchmark",
+                "status": "PASS",
+                "details": f"Evaluated {len(df_mid)} scenes -> results/middlebury.csv"
+            })
+    except Exception as e:
+        status_records.append({
+            "task": "2. Middlebury Benchmark",
+            "status": "FAIL",
+            "details": str(e)
+        })
+
+    # 3. Gunung benchmark
+    try:
+        has_gunung_data = (
+            field.DEFAULT_GUNUNG_ROOT.exists()
+            and field.DEFAULT_CALIB_PATH.exists()
+            and any((field.DEFAULT_GUNUNG_ROOT / t / "stereo").exists() for t in field.GUNUNG_TERRAINS)
+        )
+        df_gunung = run_gunung_benchmark()
+        if not has_gunung_data:
+            status_records.append({
+                "task": "3. Gunung Field Evaluation",
+                "status": "BLOCKED_BY_DATA",
+                "details": "External field images or calib not present; preserved historical results/gunung.csv"
+            })
+        else:
+            status_records.append({
+                "task": "3. Gunung Field Evaluation",
+                "status": "PASS",
+                "details": f"Evaluated {len(df_gunung)} terrains -> results/gunung.csv"
+            })
+    except Exception as e:
+        status_records.append({
+            "task": "3. Gunung Field Evaluation",
+            "status": "FAIL",
+            "details": str(e)
+        })
+
+    # 4. Optimization benchmark
+    try:
+        df_opt = run_optimization_benchmark()
+        status_records.append({
+            "task": "4. Filter & Param Optimization",
+            "status": "PASS",
+            "details": f"Evaluated {len(df_opt)} configurations -> results/optimization.csv"
+        })
+    except Exception as e:
+        status_records.append({
+            "task": "4. Filter & Param Optimization",
+            "status": "FAIL",
+            "details": str(e)
+        })
+
+    # 5. CPU profiling benchmark
+    try:
+        prof_res = run_profiling_benchmark()
+        status_records.append({
+            "task": "5. CPU Multiscale Profiling",
+            "status": "PASS",
+            "details": f"Multiscale & threading profiles saved -> results/best_params.json"
+        })
+    except Exception as e:
+        status_records.append({
+            "task": "5. CPU Multiscale Profiling",
+            "status": "FAIL",
+            "details": str(e)
+        })
+
+    # 6. CNN benchmark
+    try:
+        cnn_res = run_cnn_benchmark()
+        if cnn_res is None:
+            status_records.append({
+                "task": "6. TinyStereoNet Classifier",
+                "status": "SKIPPED_OPTIONAL",
+                "details": "PyTorch / torchvision dependencies missing or skipped"
+            })
+        else:
+            status_records.append({
+                "task": "6. TinyStereoNet Classifier",
+                "status": "PASS",
+                "details": f"Test accuracy: {cnn_res['tiny_cnn']['accuracy']:.2f}% -> results/cnn_metrics.json"
+            })
+    except Exception as e:
+        status_records.append({
+            "task": "6. TinyStereoNet Classifier",
+            "status": "FAIL",
+            "details": str(e)
+        })
 
     # Save environment metadata
-    env = collect_environment_metadata()
-    env_path = RESULTS_DIR / "environment.json"
-    with open(env_path, "w", encoding="utf-8") as f:
-        json.dump(env, f, indent=2)
-    print(f"\nRecorded system environment to: {env_path}")
+    try:
+        env = collect_environment_metadata()
+        env_path = RESULTS_DIR / "environment.json"
+        with open(env_path, "w", encoding="utf-8") as f:
+            json.dump(env, f, indent=2)
+        print(f"\nRecorded system environment to: {env_path}")
+    except Exception as e:
+        print(f"Warning: Failed to record environment: {e}")
 
-    # Generate all figures
+    # 7. Generate all figures
     try:
         import visualize
         print("\nGenerating publication figures and animated GIF...")
-        visualize.generate_all_figures()
+        fig_statuses = visualize.generate_all_figures()
+        has_fig_error = any("FAILED" in st or "ERROR" in st for st in fig_statuses.values())
+        fig_status = "FAIL" if has_fig_error else "PASS"
+        gen_count = sum(1 for st in fig_statuses.values() if "GENERATED" in st)
+        skip_count = sum(1 for st in fig_statuses.values() if "SKIPPED" in st)
+        status_records.append({
+            "task": "7. Publication Figures",
+            "status": fig_status,
+            "details": f"{len(fig_statuses)} figures processed ({gen_count} generated, {skip_count} preserved/skipped)"
+        })
     except Exception as e:
-        print(f"Warning: Figure generation encountered an error: {e}")
+        status_records.append({
+            "task": "7. Publication Figures",
+            "status": "FAIL",
+            "details": f"Figure generation error: {e}"
+        })
 
-    print("\n" + "*" * 76)
-    print("FULL REPRODUCIBILITY SUITE COMPLETED SUCCESSFULLY")
-    print("*" * 76)
+    # Print summary ledger
+    print("\n" + "=" * 76)
+    print("REPRODUCIBILITY EXECUTION SUMMARY")
+    print("=" * 76)
+    for rec in status_records:
+        print(f"  {rec['task']:<35} | {rec['status']:<18} | {rec['details']}")
+    print("=" * 76)
 
+    has_fail = any(r["status"] == "FAIL" for r in status_records)
+    blocked_count = sum(1 for r in status_records if r["status"] == "BLOCKED_BY_DATA")
+    skipped_count = sum(1 for r in status_records if r["status"] == "SKIPPED_OPTIONAL")
+    pass_count = sum(1 for r in status_records if r["status"] == "PASS")
+
+    if has_fail:
+        print("SUMMARY: SUITE COMPLETED WITH FAILURES. Check logs above.")
+    elif blocked_count > 0 or skipped_count > 0:
+        print(f"SUMMARY: SUITE COMPLETED ({pass_count} passed, {blocked_count} blocked by external data, {skipped_count} optional skipped).")
+    else:
+        print("SUMMARY: FULL REPRODUCIBILITY SUITE COMPLETED SUCCESSFULLY.")
+    print("=" * 76)
+
+    return {
+        "pass_count": pass_count,
+        "blocked_count": blocked_count,
+        "skipped_count": skipped_count,
+        "has_fail": has_fail,
+        "records": status_records
+    }
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stereo matching reproduction and evaluation runner.")
