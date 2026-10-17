@@ -10,10 +10,13 @@ Implements:
 """
 
 import argparse
+import hashlib
 import json
-import time
 from pathlib import Path
+import subprocess
+import time
 from typing import Dict, Tuple, List, Optional, Any
+import uuid
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -22,6 +25,27 @@ import torch.nn as nn
 import torch.optim as optim
 
 import stereo
+
+
+def compute_file_sha256(filepath: Path) -> str:
+    """Compute hex SHA-256 hash of a file."""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def get_git_revision() -> str:
+    """Return HEAD commit hash if inside a git repository, else 'unknown'."""
+    try:
+        rev = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL
+        ).decode("ascii").strip()
+        return rev
+    except Exception:
+        return "unknown"
 
 
 class TinyStereoNet(nn.Module):
@@ -618,12 +642,21 @@ def run_cnn_multiseed_validation(
             mad_preds=primary_summary["mad_preds"]
         )
 
+        model_pt_path = out_dir / "tiny_cnn.pt"
         if best_model_overall is not None:
-            torch.save(best_model_overall.state_dict(), str(out_dir / "tiny_cnn.pt"))
+            torch.save(best_model_overall.state_dict(), str(model_pt_path))
 
         if save_json:
             metrics_json = out_dir / "cnn_metrics.json"
             clean_json = {
+                "provenance": {
+                    "run_id": str(uuid.uuid4()),
+                    "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "git_commit": get_git_revision(),
+                    "selected_seed": primary_summary["selected_seed"],
+                    "history_csv_sha256": compute_file_sha256(history_csv),
+                    "model_checkpoint_sha256": compute_file_sha256(model_pt_path) if model_pt_path.exists() else None
+                },
                 "selected_seed": primary_summary["selected_seed"],
                 "model_parameters": primary_summary["model_parameters"],
                 "epochs": primary_summary["epochs"],

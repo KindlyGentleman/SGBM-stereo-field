@@ -53,6 +53,7 @@ def test_pipeline_presets_execution():
     # Verify block size is 5 (Pareto-dominant over bs=7)
     for p in ["FAST", "BALANCED", "QUALITY"]:
         assert optimize.PIPELINE_PRESETS[p]["blockSize"] == 5
+        assert optimize.PIPELINE_PRESETS[p]["filter"] == "dilation_assisted_median"
 
     img_l = np.random.randint(40, 200, (180, 240, 3), dtype=np.uint8)
     img_r = np.roll(img_l, -8, axis=1)
@@ -176,3 +177,36 @@ def test_multi_objective_pareto_frontier():
     assert len(p_empty) == 0
     assert p_empty.name == "is_pareto"
 
+
+def test_run_parameter_search_fail_closed_and_provenance():
+    """Verify run_parameter_and_filter_search fails closed when data missing and records provenance."""
+    from pathlib import Path
+    non_existent = Path("non_existent_middlebury_scene_dir_xyz")
+
+    # Fail closed by default if Middlebury scene absent
+    with pytest.raises(FileNotFoundError, match="Middlebury sample scene not found"):
+        optimize.run_parameter_and_filter_search(sample_scene_dir=non_existent, allow_synthetic_fallback=False)
+
+    # When fallback explicitly requested, records provenance columns accurately
+    df = optimize.run_parameter_and_filter_search(
+        sample_scene_dir=non_existent, save_csv=False, allow_synthetic_fallback=True
+    )
+    assert "dataset_type" in df.columns
+    assert "scene_name" in df.columns
+    assert (df["dataset_type"] == "synthetic_layered").all()
+    assert (df["scene_name"] == "synthetic_layered_scene").all()
+
+
+def test_cpu_profiling_provenance():
+    """Verify run_cpu_profiling includes rich provenance metadata."""
+    prof = optimize.run_cpu_profiling(iterations=1, save_json=False)
+    assert "provenance" in prof
+    prov = prof["provenance"]
+    assert "git_commit" in prov
+    assert "input_source" in prov
+    assert "scene_name" in prov
+    assert "filter_implementation" in prov
+    assert "system" in prov
+    assert prov["filter_implementation"] == "dilation_assisted_median"
+    assert "python_version" in prov["system"]
+    assert "opencv_version" in prov["system"]

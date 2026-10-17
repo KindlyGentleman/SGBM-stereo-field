@@ -273,7 +273,12 @@ def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> str:
 
 def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> str:
     """Generate Figure 3: Four Gunung terrains evaluation and failure analysis."""
-    if not (field.DEFAULT_GUNUNG_ROOT.exists() and field.DEFAULT_CALIB_PATH.exists()):
+    has_gunung, _ = field.validate_gunung_terrain_data(
+        "puncakTinggi",
+        gunung_root=field.DEFAULT_GUNUNG_ROOT,
+        calib_path=field.DEFAULT_CALIB_PATH
+    )
+    if not has_gunung:
         print("Gunung dataset or calibration not found; skipping Figure 3.")
         return "SKIPPED_MISSING_FIELD_DATA"
 
@@ -301,7 +306,7 @@ def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> str:
         comp = np.hstack([im_small, disp_small])
 
         ax.imshow(comp)
-        if rec["status"] == "VERIFIED":
+        if rec["status"] in ["VERIFIED", "REGISTRATION_SUCCESS"]:
             med_cm = rec["depth_median_m"] * 100.0
             cov_f = rec.get("frame_coverage_pct", (rec["eval_pixels"] / (1280 * 720)) * 100.0)
             desc = f"Verified: Med Err {med_cm:.1f} cm | Inliers {rec['inliers']} | Cov {cov_f:.1f}%"
@@ -315,13 +320,14 @@ def generate_figure_03_gunung(output_dir: Path = ASSETS_DIR) -> str:
     fig.savefig(output_dir / "fig03_gunung.pdf")
     plt.close(fig)
     print("Saved Figure 3: assets/fig03_gunung.png/.pdf")
+    return "GENERATED_VERIFIED_INPUTS"
 
 
 # ---------------------------------------------------------------------------
 # Figure 4: Optimization and Filter Suite
 # ---------------------------------------------------------------------------
 
-def generate_figure_04_optimization(output_dir: Path = ASSETS_DIR) -> None:
+def generate_figure_04_optimization(output_dir: Path = ASSETS_DIR) -> str:
     """Generate Figure 4: Filter suite comparison and parameter sensitivity."""
     opt_csv = RESULTS_DIR / "optimization.csv"
     if not opt_csv.exists():
@@ -476,13 +482,6 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> str:
 
     cnn_json = RESULTS_DIR / "cnn_metrics.json"
     if not cnn_json.exists():
-        try:
-            cnn.run_cnn_experiment(save_json=True)
-        except Exception as e:
-            print(f"Warning: Failed to execute CNN experiment for Figure 6: {e}; skipping.")
-            return "SKIPPED_MISSING_METRICS"
-
-    if not cnn_json.exists():
         print("Warning: cnn_metrics.json missing; cannot generate Figure 6 without verified metrics.")
         return "SKIPPED_MISSING_METRICS"
 
@@ -505,11 +504,36 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> str:
         print(f"Warning: cnn_metrics.json missing required metric fields ({err}); skipping Figure 6.")
         return "SKIPPED_MISSING_METRICS"
 
-    # Enforce genuine training history (Problem V2-01)
+    # Enforce genuine training history and checkpoint presence
     cnn_hist_csv = RESULTS_DIR / "cnn_history.csv"
     if not cnn_hist_csv.exists():
         print("Warning: cnn_history.csv missing; cannot generate Figure 6 without genuine training history.")
         return "SKIPPED_MISSING_HISTORY"
+
+    model_pt = RESULTS_DIR / "tiny_cnn.pt"
+    if not model_pt.exists():
+        print("Warning: tiny_cnn.pt checkpoint missing; cannot render learned Conv1 kernels.")
+        return "SKIPPED_MISSING_TRAINED_MODEL"
+
+    # Check provenance artifact hashes before loading if recorded in metrics JSON
+    prov = cdata.get("provenance", {})
+    if prov:
+        import hashlib
+        def get_sha256(p: Path) -> str:
+            h = hashlib.sha256()
+            with open(p, "rb") as f_hash:
+                while chunk := f_hash.read(65536):
+                    h.update(chunk)
+            return h.hexdigest()
+
+        expected_hist = prov.get("history_csv_sha256")
+        expected_ckpt = prov.get("model_checkpoint_sha256")
+        if expected_hist and get_sha256(cnn_hist_csv) != expected_hist:
+            print("Warning: cnn_history.csv SHA-256 does not match provenance in cnn_metrics.json.")
+            return "SKIPPED_ARTIFACT_MISMATCH"
+        if expected_ckpt and get_sha256(model_pt) != expected_ckpt:
+            print("Warning: tiny_cnn.pt SHA-256 does not match provenance in cnn_metrics.json.")
+            return "SKIPPED_ARTIFACT_MISMATCH"
 
     try:
         df_hist = pd.read_csv(cnn_hist_csv)
@@ -533,11 +557,6 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> str:
         return "SKIPPED_INVALID_HISTORY"
 
     # Enforce trained checkpoint validation (Problem V2-02)
-    model_pt = RESULTS_DIR / "tiny_cnn.pt"
-    if not model_pt.exists():
-        print("Warning: tiny_cnn.pt checkpoint missing; cannot render learned Conv1 kernels.")
-        return "SKIPPED_MISSING_TRAINED_MODEL"
-
     try:
         state_dict = torch.load(str(model_pt), map_location="cpu", weights_only=True)
         if "conv1.weight" not in state_dict:
@@ -576,7 +595,7 @@ def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> str:
     bars = ax_b.bar(methods, accs, yerr=errs, capsize=5, width=0.45, color=colors, alpha=0.85)
     ax_b.set_ylabel("Held-Out Test Accuracy (%)")
     ax_b.set_ylim(0.0, 115.0)
-    ax_b.set_title(f"(b) Held-Out Accuracy (Seed {prim_seed} p = {prim_p:.4f})", fontweight="bold")
+    ax_b.set_title(f"(b) Held-Out Accuracy (Seed {prim_seed} McNemar p = {prim_p:.4f})", fontweight="bold")
     ax_b.grid(True, alpha=0.3, axis="y")
 
     ax_b.text(bars[0].get_x() + bars[0].get_width() / 2.0, mad_acc + 3.0, f"{mad_acc:.1f}%",
@@ -627,13 +646,10 @@ def generate_figure_07_cross_dataset(output_dir: Path = ASSETS_DIR) -> str:
         and (sc_dir / "mask0nocc.png").exists()
     )
 
-    pt_dir = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi"
-    has_gunung = (
-        field.DEFAULT_GUNUNG_ROOT.exists()
-        and field.DEFAULT_CALIB_PATH.exists()
-        and pt_dir.exists()
-        and (pt_dir / "stereo" / "left_0000.png").exists()
-        and (pt_dir / "realsense" / "depth_0000.png").exists()
+    has_gunung, _ = field.validate_gunung_terrain_data(
+        "puncakTinggi",
+        gunung_root=field.DEFAULT_GUNUNG_ROOT,
+        calib_path=field.DEFAULT_CALIB_PATH
     )
 
     if not has_middlebury:

@@ -385,7 +385,7 @@ def run_full_suite() -> Dict[str, Any]:
         df_syn = run_synthetic_benchmark()
         status_records.append({
             "task": "1. Synthetic Benchmark",
-            "status": "PASS",
+            "status": "PASS_REPRODUCED",
             "details": f"Generated {len(df_syn)} records -> results/synthetic.csv"
         })
     except Exception as e:
@@ -408,7 +408,7 @@ def run_full_suite() -> Dict[str, Any]:
         else:
             status_records.append({
                 "task": "2. Middlebury Benchmark",
-                "status": "PASS",
+                "status": "PASS_REPRODUCED",
                 "details": f"Evaluated {len(df_mid)} scenes -> results/middlebury.csv"
             })
     except Exception as e:
@@ -429,13 +429,13 @@ def run_full_suite() -> Dict[str, Any]:
         if not has_gunung_data:
             status_records.append({
                 "task": "3. Gunung Field Evaluation",
-                "status": "BLOCKED_BY_DATA",
+                "status": "HISTORICAL_ONLY",
                 "details": "External field images or calib not present; preserved historical results/gunung.csv"
             })
         else:
             status_records.append({
                 "task": "3. Gunung Field Evaluation",
-                "status": "PASS",
+                "status": "PASS_REPRODUCED",
                 "details": f"Evaluated {len(df_gunung)} terrains -> results/gunung.csv"
             })
     except Exception as e:
@@ -450,7 +450,7 @@ def run_full_suite() -> Dict[str, Any]:
         df_opt = run_optimization_benchmark()
         status_records.append({
             "task": "4. Filter & Param Optimization",
-            "status": "PASS",
+            "status": "PASS_REPRODUCED",
             "details": f"Evaluated {len(df_opt)} configurations -> results/optimization.csv"
         })
     except Exception as e:
@@ -465,7 +465,7 @@ def run_full_suite() -> Dict[str, Any]:
         prof_res = run_profiling_benchmark()
         status_records.append({
             "task": "5. CPU Multiscale Profiling",
-            "status": "PASS",
+            "status": "PASS_REPRODUCED",
             "details": f"Multiscale & threading profiles saved -> results/best_params.json"
         })
     except Exception as e:
@@ -487,7 +487,7 @@ def run_full_suite() -> Dict[str, Any]:
         else:
             status_records.append({
                 "task": "6. TinyStereoNet Classifier",
-                "status": "PASS",
+                "status": "PASS_REPRODUCED",
                 "details": f"Test accuracy: {cnn_res['tiny_cnn']['accuracy']:.2f}% -> results/cnn_metrics.json"
             })
     except Exception as e:
@@ -513,7 +513,7 @@ def run_full_suite() -> Dict[str, Any]:
         print("\nGenerating publication figures and animated GIF...")
         fig_statuses = visualize.generate_all_figures()
         has_fig_error = any("FAILED" in st or "ERROR" in st for st in fig_statuses.values())
-        fig_status = "FAIL" if has_fig_error else "PASS"
+        fig_status = "FAIL" if has_fig_error else "PASS_REPRODUCED"
         gen_count = sum(1 for st in fig_statuses.values() if "GENERATED" in st)
         skip_count = sum(1 for st in fig_statuses.values() if "SKIPPED" in st)
         status_records.append({
@@ -537,14 +537,14 @@ def run_full_suite() -> Dict[str, Any]:
     print("=" * 76)
 
     has_fail = any(r["status"] == "FAIL" for r in status_records)
-    blocked_count = sum(1 for r in status_records if r["status"] == "BLOCKED_BY_DATA")
+    blocked_count = sum(1 for r in status_records if r["status"] in ["BLOCKED_BY_DATA", "HISTORICAL_ONLY"])
     skipped_count = sum(1 for r in status_records if r["status"] == "SKIPPED_OPTIONAL")
-    pass_count = sum(1 for r in status_records if r["status"] == "PASS")
+    pass_count = sum(1 for r in status_records if "PASS" in r["status"])
 
     if has_fail:
         print("SUMMARY: SUITE COMPLETED WITH FAILURES. Check logs above.")
     elif blocked_count > 0 or skipped_count > 0:
-        print(f"SUMMARY: SUITE COMPLETED ({pass_count} passed, {blocked_count} blocked by external data, {skipped_count} optional skipped).")
+        print(f"SUMMARY: SUITE COMPLETED ({pass_count} passed, {blocked_count} historical/blocked by data, {skipped_count} optional skipped).")
     else:
         print("SUMMARY: FULL REPRODUCIBILITY SUITE COMPLETED SUCCESSFULLY.")
     print("=" * 76)
@@ -589,7 +589,9 @@ def main() -> None:
     if args.cnn:
         run_cnn_benchmark()
     if args.full:
-        run_full_suite()
+        suite_res = run_full_suite()
+        if suite_res.get("has_fail", False):
+            sys.exit(1)
 
 
 if __name__ == "__main__":

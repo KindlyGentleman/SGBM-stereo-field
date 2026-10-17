@@ -10,6 +10,8 @@ Implements classical stereo optimization:
 
 import json
 from pathlib import Path
+import platform
+import subprocess
 import time
 from typing import Dict, List, Optional, Tuple, Any
 import cv2
@@ -21,6 +23,30 @@ import field
 
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_git_revision() -> str:
+    """Return HEAD commit hash if inside a git repository, else 'unknown'."""
+    try:
+        rev = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL
+        ).decode("ascii").strip()
+        return rev
+    except Exception:
+        return "unknown"
+
+
+def get_system_provenance() -> Dict[str, Any]:
+    """Capture host architecture, OS, Python and OpenCV versions for provenance."""
+    return {
+        "os": platform.system(),
+        "release": platform.release(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "python_version": platform.python_version(),
+        "opencv_version": cv2.__version__
+    }
 
 # ---------------------------------------------------------------------------
 # Filter Benchmark Suite
@@ -231,8 +257,8 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "speckleRange": 2,
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
-        "filter": "median_valid",
-        "description": "0.5x scale (360p), 80 disparities, single-pass SGBM + validity-aware median filter for low-latency robotics"
+        "filter": "dilation_assisted_median",
+        "description": "0.5x scale (360p), 80 disparities, single-pass SGBM + dilation-assisted median filter for low-latency robotics"
     },
     "BALANCED": {
         "scale": 0.75,
@@ -246,8 +272,8 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "speckleRange": 2,
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
-        "filter": "median_valid",
-        "description": "0.75x scale (540p), 128 disparities, single-pass SGBM + validity-aware median filter"
+        "filter": "dilation_assisted_median",
+        "description": "0.75x scale (540p), 128 disparities, single-pass SGBM + dilation-assisted median filter"
     },
     "QUALITY": {
         "scale": 1.0,
@@ -261,8 +287,8 @@ PIPELINE_PRESETS: Dict[str, Dict[str, Any]] = {
         "speckleRange": 2,
         "mode": cv2.STEREO_SGBM_MODE_SGBM_3WAY,
         "use_wls": False,
-        "filter": "median_valid",
-        "description": "1.0x native scale (720p), 160 disparities, block size 5 (Pareto-dominant over bs=7) + median filter"
+        "filter": "dilation_assisted_median",
+        "description": "1.0x native scale (720p), 160 disparities, block size 5 (Pareto-dominant over bs=7) + dilation-assisted median filter"
     }
 }
 
@@ -345,7 +371,7 @@ def run_stereo_pipeline(
         raw_valid = dl > (matcher.getMinDisparity() - 1) * 16
         d_raw = np.where(raw_valid, dl.astype(np.float32) / 16.0, -1.0)
 
-        filt_name = cfg.get("filter", "median_valid")
+        filt_name = cfg.get("filter", "dilation_assisted_median")
         if filt_name in ["raw", "none"]:
             d_filt = d_raw
         else:
@@ -492,7 +518,8 @@ def compute_pareto_frontier(
 
 def run_parameter_and_filter_search(
     sample_scene_dir: Optional[Path] = None,
-    save_csv: bool = True
+    save_csv: bool = True,
+    allow_synthetic_fallback: bool = False
 ) -> pd.DataFrame:
     """Benchmark filter candidates and parameter sensitivities on reference scene."""
     if sample_scene_dir is None:
@@ -504,13 +531,22 @@ def run_parameter_and_filter_search(
     mask_path = sample_scene_dir / "mask0nocc.png"
 
     if not im0_path.exists():
-        # Fallback to synthetic layered scene if Middlebury is absent
+        if not allow_synthetic_fallback:
+            raise FileNotFoundError(
+                f"Middlebury sample scene not found at {sample_scene_dir}. "
+                "Pass allow_synthetic_fallback=True if running in an environment without Middlebury data."
+            )
+        # Fallback to synthetic layered scene if Middlebury is absent and fallback explicitly requested
         im0, im1, disp_gt, mask_eval = stereo.generate_layered_synthetic_scene(320, 240, seed=42)
+        dataset_type = "synthetic_layered"
+        scene_name = "synthetic_layered_scene"
     else:
         im0 = cv2.imread(str(im0_path))
         im1 = cv2.imread(str(im1_path))
         disp_gt = stereo.load_pfm(str(gt_path))
         mask_eval = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) == 255
+        dataset_type = "middlebury_trainingQ"
+        scene_name = sample_scene_dir.name
 
     # Enforce consistent grayscale inputs for CPU matching
     gray0 = cv2.cvtColor(im0, cv2.COLOR_BGR2GRAY) if im0.ndim == 3 else im0
@@ -521,15 +557,23 @@ def run_parameter_and_filter_search(
     matcher = stereo.create_sgbm_matcher(num_disparities=ndisp, block_size=b_size)
     r_matcher = cv2.ximgproc.createRightMatcher(matcher)
 
-    # Time single-direction (left) matching
-    t0 = time.perf_counter()
-    dl_raw = matcher.compute(gray0, gray1)
-    match_l_ms = (time.perf_counter() - t0) * 1000.0
+    # Warm-up and time single-direction (left) matching
+    matcher.compute(gray0, gray1)
+    t_l = []
+    for _ in range(3):
+        t0 = time.perf_counter()
+        dl_raw = matcher.compute(gray0, gray1)
+        t_l.append((time.perf_counter() - t0) * 1000.0)
+    match_l_ms = float(np.mean(t_l))
 
-    # Time reverse-direction (right) matching
-    t1 = time.perf_counter()
-    dr_raw = r_matcher.compute(gray1, gray0)
-    match_r_ms = (time.perf_counter() - t1) * 1000.0
+    # Warm-up and time reverse-direction (right) matching
+    r_matcher.compute(gray1, gray0)
+    t_r = []
+    for _ in range(3):
+        t1 = time.perf_counter()
+        dr_raw = r_matcher.compute(gray1, gray0)
+        t_r.append((time.perf_counter() - t1) * 1000.0)
+    match_r_ms = float(np.mean(t_r))
 
     # Converted floating-point disparities (preserving negative sentinels)
     disp_l = dl_raw.astype(np.float32) / 16.0
@@ -547,9 +591,14 @@ def run_parameter_and_filter_search(
     rows = []
 
     for fname in filter_names:
-        t_f0 = time.perf_counter()
-        f_disp = apply_filter(fname, disp_l, im0, disp_r_raw=dr_raw, matcher=matcher)
-        f_ms = (time.perf_counter() - t_f0) * 1000.0
+        # Warmup and time filter execution
+        apply_filter(fname, disp_l, im0, disp_r_raw=dr_raw, matcher=matcher)
+        f_times = []
+        for _ in range(3):
+            t_f0 = time.perf_counter()
+            f_disp = apply_filter(fname, disp_l, im0, disp_r_raw=dr_raw, matcher=matcher)
+            f_times.append((time.perf_counter() - t_f0) * 1000.0)
+        f_ms = float(np.mean(f_times))
 
         # WLS and confidence_edge require right matching, so their total matching includes both passes
         is_dual_pass = fname in ["wls", "confidence_edge"]
@@ -558,6 +607,8 @@ def run_parameter_and_filter_search(
         m_res = stereo.compute_full_disparity_metrics(f_disp, disp_gt, mask_eval)
 
         rows.append({
+            "dataset_type": dataset_type,
+            "scene_name": scene_name,
             "experiment": "filter_ablation",
             "filter": fname,
             "block_size": b_size,
@@ -576,9 +627,13 @@ def run_parameter_and_filter_search(
     # Parameter sweeps: block size (tested with identical single-pass matching on gray0, gray1)
     for bs in [3, 5, 7, 9]:
         m_bs = stereo.create_sgbm_matcher(num_disparities=ndisp, block_size=bs)
-        t_bs0 = time.perf_counter()
-        dl_bs = m_bs.compute(gray0, gray1)
-        t_bs = (time.perf_counter() - t_bs0) * 1000.0
+        m_bs.compute(gray0, gray1)
+        bs_times = []
+        for _ in range(3):
+            t_bs0 = time.perf_counter()
+            dl_bs = m_bs.compute(gray0, gray1)
+            bs_times.append((time.perf_counter() - t_bs0) * 1000.0)
+        t_bs = float(np.mean(bs_times))
 
         d_bs = dl_bs.astype(np.float32) / 16.0
         d_bs[dl_bs <= -16] = -1.0
@@ -586,6 +641,8 @@ def run_parameter_and_filter_search(
         m_bs_res = stereo.compute_full_disparity_metrics(d_bs, disp_gt, mask_eval)
 
         rows.append({
+            "dataset_type": dataset_type,
+            "scene_name": scene_name,
             "experiment": "block_size_sweep",
             "filter": "raw",
             "block_size": bs,
@@ -626,6 +683,8 @@ def run_cpu_profiling(
     save_json: bool = True
 ) -> Dict[str, Any]:
     """Profile CPU execution across resolutions (720p, 360p, 180p) and threads (1 to 16)."""
+    input_source_name = "custom_input"
+    scene_name = "custom"
     if input_image is None or right_image is None:
         pt_left = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi" / "stereo" / "left_0000.png"
         pt_right = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi" / "stereo" / "right_0000.png"
@@ -635,16 +694,22 @@ def run_cpu_profiling(
         if pt_left.exists() and pt_right.exists():
             input_image = cv2.imread(str(pt_left))
             right_image = cv2.imread(str(pt_right))
+            input_source_name = "gunung_volcanic_field"
+            scene_name = "puncakTinggi"
         elif jp_left.exists() and jp_right.exists():
             # Resize Middlebury Jadeplant to 720p (1280x720) for standardized CPU profiling
             im0 = cv2.imread(str(jp_left))
             im1 = cv2.imread(str(jp_right))
             input_image = cv2.resize(im0, (1280, 720), interpolation=cv2.INTER_AREA)
             right_image = cv2.resize(im1, (1280, 720), interpolation=cv2.INTER_AREA)
+            input_source_name = "middlebury_trainingQ_rescaled_720p"
+            scene_name = "Jadeplant"
         else:
             synth_l, synth_r, _, _ = stereo.generate_layered_synthetic_scene(1280, 720, seed=42)
             input_image = synth_l
             right_image = synth_r
+            input_source_name = "procedural_synthetic_720p"
+            scene_name = "layered_synthetic_scene"
 
     h_full, w_full = input_image.shape[:2]
 
@@ -734,6 +799,7 @@ def run_cpu_profiling(
             "scale": PIPELINE_PRESETS[p_name]["scale"],
             "num_disparities": PIPELINE_PRESETS[p_name]["numDisparities"],
             "block_size": PIPELINE_PRESETS[p_name]["blockSize"],
+            "filter": PIPELINE_PRESETS[p_name]["filter"],
             "mean_ms": float(np.mean(p_times)),
             "std_ms": float(np.std(p_times)),
             "fps": float(1000.0 / np.mean(p_times)),
@@ -744,6 +810,14 @@ def run_cpu_profiling(
         }
 
     profile_summary = {
+        "provenance": {
+            "git_commit": get_git_revision(),
+            "input_source": input_source_name,
+            "scene_name": scene_name,
+            "system": get_system_provenance(),
+            "filter_implementation": "dilation_assisted_median",
+            "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        },
         "resolutions": res_results,
         "threads": thread_results,
         "presets": preset_results
@@ -753,8 +827,13 @@ def run_cpu_profiling(
         best_params_path = RESULTS_DIR / "best_params.json"
         with open(best_params_path, "w", encoding="utf-8") as f:
             json.dump({
+                "provenance": profile_summary["provenance"],
                 "pipeline_presets": PIPELINE_PRESETS,
-                "benchmarked_performance": profile_summary
+                "benchmarked_performance": {
+                    "resolutions": res_results,
+                    "threads": thread_results,
+                    "presets": preset_results
+                }
             }, f, indent=2)
 
     return profile_summary

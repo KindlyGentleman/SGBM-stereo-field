@@ -1,9 +1,17 @@
 {
+  "provenance": {
+    "run_id": "5c89e191-3d92-4979-89b5-7fe3169e21c3",
+    "timestamp_utc": "2026-10-17T16:09:27Z",
+    "git_commit": "85de099da97634e07657196c266eeca17d3f111e",
+    "selected_seed": 202,
+    "history_csv_sha256": "d9adb8bc7914924ec4ded3eb45b4b469146b40bfb8ff1da7c97fd7e4bde64bd2",
+    "model_checkpoint_sha256": "d5a29436b3a58944d7a264b75f0b330a2edc2c1fa19bd65536eacaeb6b786fc7"
+  },
   "selected_seed": 202,
   "model_parameters": 1054,
   "epochs": 15,
   "cpu_threads": 2,
-  "training_time_seconds": 2.218421199999284,
+  "training_time_seconds": 1.3980516000010539,
   "best_val_accuracy": 95.95959595959596,
   "optimal_classical_threshold": 0.3636363636363636,
   "classical_baseline": {
@@ -31,8 +39,8 @@
       "TN": 118
     },
     "samples_evaluated": 246,
-    "inference_time_s": 0.003844199998638942,
-    "inference_ms_per_patch": 0.015626829262759927
+    "inference_time_s": 0.0027496999991853954,
+    "inference_ms_per_patch": 0.011177642273111363
   },
   "paired_comparison": {
     "acc_a": 91.05691056910568,
@@ -75,7 +83,7 @@
     "seed_runs": [
       {
         "seed": 42,
-        "train_time_s": 2.266847400000188,
+        "train_time_s": 1.5121233999998367,
         "best_val_accuracy": 94.94949494949495,
         "cnn_accuracy": 94.3089430894309,
         "cnn_precision": 92.91338582677166,
@@ -90,7 +98,7 @@
       },
       {
         "seed": 101,
-        "train_time_s": 2.388068700000076,
+        "train_time_s": 1.4202311000008194,
         "best_val_accuracy": 94.44444444444444,
         "cnn_accuracy": 95.9349593495935,
         "cnn_precision": 96.69421487603306,
@@ -105,7 +113,7 @@
       },
       {
         "seed": 202,
-        "train_time_s": 2.218421199999284,
+        "train_time_s": 1.3980516000010539,
         "best_val_accuracy": 95.95959595959596,
         "cnn_accuracy": 95.52845528455285,
         "cnn_precision": 95.90163934426229,
@@ -120,7 +128,7 @@
       },
       {
         "seed": 303,
-        "train_time_s": 2.0911330999988422,
+        "train_time_s": 1.4822892000011052,
         "best_val_accuracy": 92.92929292929293,
         "cnn_accuracy": 95.9349593495935,
         "cnn_precision": 98.29059829059828,
@@ -135,7 +143,7 @@
       },
       {
         "seed": 404,
-        "train_time_s": 1.807195600000341,
+        "train_time_s": 1.556367399998635,
         "best_val_accuracy": 94.44444444444444,
         "cnn_accuracy": 95.9349593495935,
         "cnn_precision": 96.69421487603306,

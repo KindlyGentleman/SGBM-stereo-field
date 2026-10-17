@@ -1,4 +1,19 @@
 {
+  "provenance": {
+    "git_commit": "85de099da97634e07657196c266eeca17d3f111e",
+    "input_source": "middlebury_trainingQ_rescaled_720p",
+    "scene_name": "Jadeplant",
+    "system": {
+      "os": "Windows",
+      "release": "11",
+      "machine": "AMD64",
+      "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+      "python_version": "3.13.7",
+      "opencv_version": "5.0.0"
+    },
+    "filter_implementation": "dilation_assisted_median",
+    "timestamp_utc": "2026-10-17T16:09:18Z"
+  },
   "pipeline_presets": {
     "FAST": {
       "scale": 0.5,
@@ -12,8 +27,8 @@
       "speckleRange": 2,
       "mode": 2,
       "use_wls": false,
-      "filter": "median_valid",
-      "description": "0.5x scale (360p), 80 disparities, single-pass SGBM + validity-aware median filter for low-latency robotics"
+      "filter": "dilation_assisted_median",
+      "description": "0.5x scale (360p), 80 disparities, single-pass SGBM + dilation-assisted median filter for low-latency robotics"
     },
     "BALANCED": {
       "scale": 0.75,
@@ -27,8 +42,8 @@
       "speckleRange": 2,
       "mode": 2,
       "use_wls": false,
-      "filter": "median_valid",
-      "description": "0.75x scale (540p), 128 disparities, single-pass SGBM + validity-aware median filter"
+      "filter": "dilation_assisted_median",
+      "description": "0.75x scale (540p), 128 disparities, single-pass SGBM + dilation-assisted median filter"
     },
     "QUALITY": {
       "scale": 1.0,
@@ -42,8 +57,8 @@
       "speckleRange": 2,
       "mode": 2,
       "use_wls": false,
-      "filter": "median_valid",
-      "description": "1.0x native scale (720p), 160 disparities, block size 5 (Pareto-dominant over bs=7) + median filter"
+      "filter": "dilation_assisted_median",
+      "description": "1.0x native scale (720p), 160 disparities, block size 5 (Pareto-dominant over bs=7) + dilation-assisted median filter"
     }
   },
   "benchmarked_performance": {
@@ -53,44 +68,45 @@
         "width": 1280,
         "height": 720,
         "num_disparities": 160,
-        "mean_ms": 159.39245000481606,
-        "std_ms": 11.167701314325235,
-        "fps": 6.273822881634512
+        "mean_ms": 78.71863999989728,
+        "std_ms": 7.288914575120601,
+        "fps": 12.703471503081163
       },
       "360p": {
         "scale": 0.5,
         "width": 640,
         "height": 360,
         "num_disparities": 80,
-        "mean_ms": 22.630839986959472,
-        "std_ms": 2.4646209951640308,
-        "fps": 44.187489309995925
+        "mean_ms": 18.18730000013602,
+        "std_ms": 3.1645408431793856,
+        "fps": 54.983422497705604
       },
       "180p": {
         "scale": 0.25,
         "width": 320,
         "height": 180,
         "num_disparities": 48,
-        "mean_ms": 5.793559999438003,
-        "std_ms": 0.6449298024341242,
-        "fps": 172.60544468288992
+        "mean_ms": 3.6279599997214973,
+        "std_ms": 0.9904019675258874,
+        "fps": 275.63699712145825
       }
     },
     "threads": {
-      "threads_1": 51.73577999812551,
-      "threads_2": 46.055029990384355,
-      "threads_4": 32.38743999390863,
-      "threads_8": 25.323319993913174,
-      "threads_16": 26.220330002252012
+      "threads_1": 47.74301999932504,
+      "threads_2": 27.18205000019225,
+      "threads_4": 18.78714999966178,
+      "threads_8": 13.801860000421584,
+      "threads_16": 15.721519999533484
     },
     "presets": {
       "FAST": {
         "scale": 0.5,
         "num_disparities": 80,
         "block_size": 5,
-        "mean_ms": 50.25002000620589,
-        "std_ms": 3.60296066196762,
-        "fps": 19.900489589387224,
+        "filter": "dilation_assisted_median",
+        "mean_ms": 30.686659999810217,
+        "std_ms": 2.9531027794451035,
+        "fps": 32.58745005178747,
         "bad2_cond_pct": 19.408117880927524,
         "bad2_ca_pct": 44.50965420325408,
         "coverage_pct": 68.853517671619,
@@ -100,9 +116,10 @@
         "scale": 0.75,
         "num_disparities": 128,
         "block_size": 5,
-        "mean_ms": 102.80928000574932,
-        "std_ms": 17.06027728051295,
-        "fps": 9.726748401934902,
+        "filter": "dilation_assisted_median",
+        "mean_ms": 75.01986999996006,
+        "std_ms": 5.536369483080233,
+        "fps": 13.32980182451039,
         "bad2_cond_pct": 14.06366192074,
         "bad2_ca_pct": 42.26851438179795,
         "coverage_pct": 67.17936429285093,
@@ -112,9 +129,10 @@
         "scale": 1.0,
         "num_disparities": 160,
         "block_size": 5,
-        "mean_ms": 167.6835999940522,
-        "std_ms": 11.440113621180808,
-        "fps": 5.9636124226547516,
+        "filter": "dilation_assisted_median",
+        "mean_ms": 106.78278999967006,
+        "std_ms": 8.711203601067291,
+        "fps": 9.364804946593827,
         "bad2_cond_pct": 9.741000162892979,
         "bad2_ca_pct": 36.986523918217486,
         "coverage_pct": 69.81406418806404,

@@ -247,6 +247,36 @@ def run_middlebury_benchmark(
 # Gunung Field and RealSense Depth Registration Utilities
 # ---------------------------------------------------------------------------
 
+def validate_gunung_terrain_data(
+    terrain_name: str = "puncakTinggi",
+    gunung_root: Path = DEFAULT_GUNUNG_ROOT,
+    calib_path: Path = DEFAULT_CALIB_PATH
+) -> Tuple[bool, Dict[str, Path]]:
+    """Validate presence of stereo images, calibration, and RealSense RGB-D files for a Gunung terrain.
+
+    Returns:
+        is_valid: True if calibration and required stereo images exist.
+        paths: Dictionary mapping asset names ('calib', 'left', 'right', 'rs_rgb', 'rs_depth') to Path objects.
+    """
+    st_dir = gunung_root / terrain_name / "stereo"
+    rs_dir = gunung_root / terrain_name / "hardware" / "realsense"
+
+    paths = {
+        "calib": calib_path,
+        "left": st_dir / "left_0000.png",
+        "right": st_dir / "right_0000.png",
+        "rs_rgb": rs_dir / "rgb_0000.png",
+        "rs_depth": rs_dir / "depth_0000.npz"
+    }
+
+    has_calib = paths["calib"].exists()
+    has_stereo = paths["left"].exists() and paths["right"].exists()
+    has_rs = paths["rs_rgb"].exists() and paths["rs_depth"].exists()
+
+    is_valid = bool(has_calib and has_stereo and has_rs)
+    return is_valid, paths
+
+
 def load_realsense_depth(npz_path: str) -> np.ndarray:
     """Load RealSense depth map from NPZ archive and convert mm to meters."""
     path = Path(npz_path)
@@ -301,7 +331,12 @@ def register_realsense_pnp(
 
     bf = cv2.BFMatcher(cv2.NORM_L2)
     matches = bf.knnMatch(des_rs, des_st, k=2)
-    good = [m for m, n in matches if len(matches) > 0 and m.distance < 0.75 * n.distance]
+    good = []
+    for match_group in matches:
+        if len(match_group) == 2:
+            m, n = match_group
+            if m.distance < 0.75 * n.distance:
+                good.append(m)
     stats["sift_matches"] = len(good)
 
     h_rs, w_rs = rs_depth_raw_mm.shape[:2]
@@ -367,15 +402,16 @@ def project_realsense_depth_to_stereo(
     """Project RealSense depth into rectified stereo left view using z-buffering.
 
     Nearer 3D points overwrite farther 3D points when projecting to the same pixel.
+    Uses deterministic minimum-depth accumulation via np.minimum.at.
     """
     h_out, w_out = out_shape
-    ref_depth = np.zeros((h_out, w_out), dtype=np.float32)
+    ref_depth = np.full((h_out, w_out), np.inf, dtype=np.float32)
 
     min_mm = int(min_depth * 1000.0)
     max_mm = int(max_depth * 1000.0)
     v_idx, u_idx = np.where((rs_depth_raw_mm > min_mm) & (rs_depth_raw_mm < max_mm))
     if len(v_idx) == 0:
-        return ref_depth
+        return np.zeros((h_out, w_out), dtype=np.float32)
 
     z_m = rs_depth_raw_mm[v_idx, u_idx].astype(np.float32) / 1000.0
     pts_rs = np.column_stack([
@@ -395,9 +431,10 @@ def project_realsense_depth_to_stereo(
     v_val = v_proj[valid_mask]
     z_val = z_proj[valid_mask]
 
-    # Z-buffering: sort by depth descending so nearer points overwrite farther points
-    sort_order = np.argsort(-z_val)
-    ref_depth[v_val[sort_order], u_val[sort_order]] = z_val[sort_order]
+    # Deterministic z-buffering: nearest depth reduction
+    if len(z_val) > 0:
+        np.minimum.at(ref_depth, (v_val, u_val), z_val)
+    ref_depth[np.isinf(ref_depth)] = 0.0
     return ref_depth
 
 
@@ -478,16 +515,16 @@ def evaluate_gunung_terrain(
         ref_depth: Registered RealSense depth map (or None if out of range).
         st_depth: Stereo predicted depth map in meters.
     """
-    st_dir = gunung_root / terrain_name / "stereo"
-    rs_dir = gunung_root / terrain_name / "hardware" / "realsense"
-
-    raw_l_path = st_dir / "left_0000.png"
-    raw_r_path = st_dir / "right_0000.png"
-    rs_rgb_path = rs_dir / "rgb_0000.png"
-    rs_npz_path = rs_dir / "depth_0000.npz"
+    valid_data, paths = validate_gunung_terrain_data(terrain_name, gunung_root, calib_path)
+    raw_l_path = paths["left"]
+    raw_r_path = paths["right"]
+    rs_rgb_path = paths["rs_rgb"]
+    rs_npz_path = paths["rs_depth"]
 
     if not raw_l_path.exists() or not raw_r_path.exists():
         raise FileNotFoundError(f"Stereo images missing for terrain: {terrain_name}")
+    if not paths["calib"].exists():
+        raise FileNotFoundError(f"Stereo calibration missing at: {calib_path}")
 
     calib = stereo.load_calibration(str(calib_path))
     maps_l, maps_r, _ = stereo.build_rectification_maps(calib, (1280, 720))
@@ -546,12 +583,12 @@ def evaluate_gunung_terrain(
 
     if not success or R_mat is None or tvec is None:
         if reg_stats.get("valid_3d_2d_pairs", 0) == 0 and reg_stats.get("sift_matches", 0) > 0:
-            record["status"] = "OUT_OF_RANGE"
+            record["status"] = "OUT_OF_RANGE_OR_UNMEASURED_REFERENCE"
         else:
             record["status"] = "REGISTRATION_FAILED"
         return record, rect_l, None, st_depth
 
-    record["status"] = "VERIFIED"
+    record["status"] = "REGISTRATION_SUCCESS"
     record["tx_m"] = float(tvec[0, 0])
     record["ty_m"] = float(tvec[1, 0])
     record["tz_m"] = float(tvec[2, 0])

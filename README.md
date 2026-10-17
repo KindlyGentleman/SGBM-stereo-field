@@ -178,18 +178,18 @@ Table 3: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x 
 
 | Filter Mode | Bad@2.0 Cond (%) | Bad@2.0 CA (%) | Valid Coverage (%) | Match Latency | Filter Latency | Total Latency |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **raw** | 11.42% | 38.64% | 69.27% | 39.0 ms | **0.6 ms** | **39.6 ms** |
-| **masked_median** | 11.44% | 38.65% | 69.27% | 39.0 ms | 66.5 ms | 105.5 ms |
-| **dilation_assisted_median** | **11.41%** | **38.64%** | **69.27%** | 39.0 ms | 3.9 ms | 42.9 ms |
-| **guided** | 35.67% | 55.44% | 69.27% | 39.0 ms | 26.8 ms | 65.8 ms |
-| **joint_bilateral** | 13.26% | 39.91% | 69.27% | 39.0 ms | 13.7 ms | 52.7 ms |
-| **wls** | 26.89% | 41.90% | **79.46%** | 62.4 ms | 23.8 ms | 86.2 ms |
-| **confidence_edge** | **4.41%** | **60.73%** | 41.08% | 62.4 ms | 24.2 ms | 86.7 ms |
+| **raw** | 11.42% | 38.64% | 69.27% | 24.5 ms | **0.5 ms** | **24.9 ms** |
+| **masked_median** | 11.44% | 38.65% | 69.27% | 24.5 ms | 59.7 ms | 84.2 ms |
+| **dilation_assisted_median** | **11.41%** | **38.64%** | **69.27%** | 24.5 ms | 3.1 ms | 27.5 ms |
+| **guided** | 35.67% | 55.44% | 69.27% | 24.5 ms | 11.1 ms | 35.6 ms |
+| **joint_bilateral** | 13.26% | 39.91% | 69.27% | 24.5 ms | 8.7 ms | 33.2 ms |
+| **wls** | 26.89% | 41.90% | **79.46%** | 41.7 ms | 24.2 ms | 65.9 ms |
+| **confidence_edge** | **4.41%** | **60.73%** | 41.08% | 41.7 ms | 22.7 ms | 64.4 ms |
 
 #### Key Insights on Post-Processing:
 1. **The Conditional Accuracy Fallacy:** `confidence_edge` appears superior if judged strictly by conditional Bad@2 (4.41%). However, it rejects 58.9% of evaluable pixels. Its completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}} = 1 - \mathrm{Cov} + \mathrm{Cov} \cdot \mathrm{Bad}_{\mathrm{valid}}$) jumps to **60.73%**, far worse than raw SGBM (38.64%).
-2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This increases matching latency from 39.0 ms to 62.4 ms and adds 23.8 ms filter overhead (total 86.2 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%, though it achieves the highest valid coverage (79.46%).
-3. **Masked Median versus Morphological Dilation:** The true valid-neighbor median filter (`masked_median`) operates strictly on observed valid pixels in each $3 \times 3$ neighborhood, preventing value corruption from unmeasured pixels. On Jadeplant, `masked_median` yields 11.44% Bad@2 while `dilation_assisted_median` yields 11.41% Bad@2 (with 3.9 ms filter latency). Across the full parameter space, multi-objective Pareto analysis across latency, error, and coverage shows that smaller block sizes (e.g. bs = 3, 32.6 ms, 7.74% Bad@2, 70.0% coverage), `wls` (86.2 ms, 26.89% Bad@2, 79.46% coverage), and `confidence_edge` (86.7 ms, 4.41% Bad@2, 41.08% coverage) form the non-dominated Pareto front.
+2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This increases matching latency from 24.5 ms to 41.7 ms and adds 24.2 ms filter overhead (total 65.9 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%, though it achieves the highest valid coverage (79.46%).
+3. **Masked Median versus Morphological Dilation:** The true valid-neighbor median filter (`masked_median`) operates strictly on observed valid pixels in each $3 \times 3$ neighborhood, preventing value corruption from unmeasured pixels. On Jadeplant, `masked_median` yields 11.44% Bad@2 while `dilation_assisted_median` yields 11.41% Bad@2 (with 3.1 ms filter latency). Across the full parameter space, multi-objective Pareto analysis shows that block size 3 (21.5 ms, 7.74% Bad@2, 70.0% coverage), `wls` (65.9 ms, 26.89% Bad@2, 79.46% coverage), and `confidence_edge` (64.4 ms, 4.41% Bad@2, 41.08% coverage) form the non-dominated Pareto front.
 
 ---
 
@@ -200,9 +200,9 @@ Table 3: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x 
 
 ### Algorithmic Levers on CPU
 
-1. **Resolution Scaling (Dominant Lever):** Scaling 720p input (159.4 ms, 6.3 FPS) down to 360p ($0.5\times$, 22.6 ms, 44.2 FPS) yields a **$7.0\times$ speedup**. At 180p ($0.25\times$, 5.8 ms), SGBM executes at 172.6 FPS on single-channel CPU.
-2. **Block Size Sensitivity:** In an audited 4-configuration sweep (bs $\in [3, 5, 7, 9]$), block size 3 achieved the lowest error (7.74% Bad@2) and fastest runtime (46.2 ms), while block size 5 (9.56% Bad@2, 52.6 ms) achieved lower error than block size 7 (11.42% Bad@2, 55.4 ms) due to reduced window over-smoothing at sharp depth boundaries.
-3. **Thread Scaling:** Multi-threading scales effectively up to 8 threads (51.7 ms on 1 thread down to 25.3 ms on 8 threads, a $2.04\times$ speedup), with saturation beyond 8 threads due to memory bandwidth limits.
+1. **Resolution Scaling (Dominant Lever):** Scaling 720p input (114.2 ms, 8.8 FPS) down to 360p ($0.5\times$, 19.0 ms, 52.7 FPS) yields a **$6.0\times$ speedup**. At 180p ($0.25\times$, 4.0 ms), SGBM executes at 249.4 FPS on single-channel CPU.
+2. **Block Size Sensitivity:** In an audited 4-configuration sweep (bs $\in [3, 5, 7, 9]$), block size 3 achieved the lowest error (7.74% Bad@2) and fastest runtime (21.5 ms), while block size 5 (9.56% Bad@2, 24.7 ms) achieved lower error than block size 7 (11.42% Bad@2, 22.0 ms) due to reduced window over-smoothing at sharp depth boundaries.
+3. **Thread Scaling:** Multi-threading scales effectively up to 8 threads (43.6 ms on 1 thread down to 17.7 ms on 8 threads, a $2.47\times$ speedup), with saturation beyond 8 threads due to memory bandwidth limits.
 
 ```text
 Table 4: Measured Pipeline Presets on 720p Input Images
@@ -210,9 +210,9 @@ Table 4: Measured Pipeline Presets on 720p Input Images
 
 | Preset | Scale Factor | Disparities | Block Size | Post-Filter | Pipeline Latency | Measured FPS | Jadeplant Bad@2 (Cond / CA) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FAST** | $0.5\times$ (360p) | 80 px | 5 px | median_valid | 50.3 ms | 19.9 FPS | 19.4% / 44.5% |
-| **BALANCED** | $0.75\times$ (540p) | 128 px | 5 px | median_valid | 102.8 ms | 9.7 FPS | 14.1% / 42.3% |
-| **QUALITY** | $1.0\times$ (720p) | 160 px | 5 px | median_valid | 167.7 ms | 6.0 FPS | **9.7% / 37.0%** |
+| **FAST** | $0.5\times$ (360p) | 80 px | 5 px | dilation_assisted_median | 32.6 ms | 30.7 FPS | 19.4% / 44.5% |
+| **BALANCED** | $0.75\times$ (540p) | 128 px | 5 px | dilation_assisted_median | 74.7 ms | 13.4 FPS | 14.1% / 42.3% |
+| **QUALITY** | $1.0\times$ (720p) | 160 px | 5 px | dilation_assisted_median | 108.1 ms | 9.3 FPS | **9.7% / 37.0%** |
 
 These three presets form a strictly monotonic Pareto frontier balancing latency and reconstruction fidelity on standard multi-core CPUs.
 
@@ -259,7 +259,7 @@ Geometric analysis identified two root causes:
 2. **Geometric Degeneracy in `tanggaBiru`:** SIFT inliers in `tanggaBiru` clustered along a single linear steel railing ($Y$-spread standard deviation of only 9 mm). A collinear feature distribution creates an ill-conditioned PnP null space, rendering extrinsic transfer unreliable.
 
 > [!IMPORTANT]
-> **Coverage Caveat:** While median depth errors on valid points are 5.9–7.6 cm, the jointly evaluable region constitutes only **1.49% to 8.35% of the full 720p image frame** (due to RealSense active IR sunlight wash-out, FOV disparity, and occlusion boundaries). RealSense comparisons must be understood as *provisional local spot checks*, not full-field dense ground truth.
+> **Coverage Caveat:** While median depth errors on valid points are 5.9 to 7.6 cm, the jointly evaluable region constitutes only **1.49% to 8.35% of the full 720p image frame** (due to RealSense active IR sunlight wash-out, FOV disparity, and occlusion boundaries). RealSense comparisons must be understood as *provisional local spot checks*, not full-field dense ground truth.
 
 ### Far-Field Geometry (`puncakWarung`)
 

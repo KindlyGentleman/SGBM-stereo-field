@@ -151,3 +151,85 @@ def test_reproduce_run_full_suite_structure(monkeypatch, tmp_path):
     assert "records" in suite_res
     assert suite_res["has_fail"] is False
     assert suite_res["pass_count"] >= 5
+
+
+def test_all_figure_generators_return_contract():
+    """Verify all figure generation functions return valid status strings and never None."""
+    figure_funcs = [
+        ("fig01", visualize.generate_figure_01_geometry),
+        ("fig02", visualize.generate_figure_02_middlebury),
+        ("fig03", visualize.generate_figure_03_gunung),
+        ("fig04", visualize.generate_figure_04_optimization),
+        ("fig05", visualize.generate_figure_05_cpu_pareto),
+        ("fig06", visualize.generate_figure_06_cnn),
+        ("fig07", visualize.generate_figure_07_cross_dataset),
+    ]
+
+    valid_prefixes = ("GENERATED", "SKIPPED", "PRESERVED", "FAILED")
+    for name, fn in figure_funcs:
+        ret = fn()
+        assert isinstance(ret, str), f"{name} returned {type(ret)} instead of str"
+        assert ret is not None, f"{name} returned None"
+        assert any(ret.startswith(p) for p in valid_prefixes), f"{name} returned unexpected status '{ret}'"
+
+
+def test_figure_06_rejects_artifact_mismatch(monkeypatch, tmp_path):
+    """Verify Figure 6 rejects mismatched artifacts when provenance hashes do not match."""
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+
+    import json
+    import torch
+
+    # Create dummy model and history
+    import cnn
+    model_pt = results_dir / "tiny_cnn.pt"
+    dummy_model = cnn.TinyStereoNet()
+    torch.save(dummy_model.state_dict(), str(model_pt))
+
+    history_csv = results_dir / "cnn_history.csv"
+    history_df = pd.DataFrame({
+        "epoch": [1, 2],
+        "train_loss": [0.5, 0.4],
+        "val_loss": [0.45, 0.35]
+    })
+    history_df.to_csv(history_csv, index=False)
+
+    # Intentionally corrupt the expected hash in provenance
+    metrics = {
+        "provenance": {
+            "run_id": "test-run-123",
+            "history_csv_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "model_checkpoint_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "classical_baseline": {"accuracy": 91.06},
+        "tiny_cnn": {"accuracy": 95.53},
+        "multi_seed_analysis": {"cnn_accuracy_mean": 95.53, "cnn_accuracy_std": 0.70},
+        "paired_comparison": {"mcnemar_exact_pvalue": 0.0074},
+        "selected_seed": 202
+    }
+    with open(results_dir / "cnn_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f)
+
+    monkeypatch.setattr(visualize, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(visualize, "ASSETS_DIR", assets_dir)
+
+    status = visualize.generate_figure_06_cnn()
+    assert status == "SKIPPED_ARTIFACT_MISMATCH"
+
+
+def test_reproduce_full_suite_failure_flag(monkeypatch, tmp_path):
+    """Verify run_full_suite sets has_fail=True when any benchmark task raises an unhandled exception."""
+    def failing_runner(save_csv=True):
+        raise RuntimeError("Simulated benchmark failure")
+
+    monkeypatch.setattr(reproduce, "run_synthetic_benchmark", failing_runner)
+    mock_results = tmp_path / "results"
+    mock_results.mkdir()
+    monkeypatch.setattr(reproduce, "RESULTS_DIR", mock_results)
+
+    suite_res = reproduce.run_full_suite()
+    assert suite_res["has_fail"] is True
+    assert any(r["status"] == "FAIL" for r in suite_res["records"])
