@@ -66,8 +66,9 @@ def generate_constant_disparity_scene(
 
     disp_gt = np.full((height, width), float(disparity), dtype=np.float32)
     valid_mask = np.ones((height, width), dtype=bool)
-    # Right border pixels in left image have no match if shifted beyond width
-    valid_mask[:, width - disparity:] = False
+    # Under x_R = x_L - disparity, left border pixels (x_L < disparity) have no match in right view
+    if disparity > 0:
+        valid_mask[:, :min(disparity, width)] = False
 
     return left, right, disp_gt, valid_mask
 
@@ -494,14 +495,14 @@ def compute_bad_pixel_rate(
         return float(bad_count / n_valid * 100.0)
 
 
-def compute_depth_mae(
+def compute_disparity_mae(
     disp_pred: np.ndarray,
     disp_gt: np.ndarray,
     valid_mask: np.ndarray,
     pred_valid_mask: Optional[np.ndarray] = None,
     min_gt_disp: float = 0.0
 ) -> float:
-    """Mean absolute error in disparity over jointly valid evaluation pixels."""
+    """Mean absolute error in disparity (pixels) over jointly valid evaluation pixels."""
     eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
     if pred_valid_mask is not None:
         joint = eval_mask & pred_valid_mask & np.isfinite(disp_pred)
@@ -513,14 +514,14 @@ def compute_depth_mae(
     return float(np.mean(np.abs(disp_pred[joint] - disp_gt[joint])))
 
 
-def compute_depth_rmse(
+def compute_disparity_rmse(
     disp_pred: np.ndarray,
     disp_gt: np.ndarray,
     valid_mask: np.ndarray,
     pred_valid_mask: Optional[np.ndarray] = None,
     min_gt_disp: float = 0.0
 ) -> float:
-    """Root mean square error in disparity over jointly valid evaluation pixels."""
+    """Root mean square error in disparity (pixels) over jointly valid evaluation pixels."""
     eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
     if pred_valid_mask is not None:
         joint = eval_mask & pred_valid_mask & np.isfinite(disp_pred)
@@ -532,14 +533,14 @@ def compute_depth_rmse(
     return float(np.sqrt(np.mean((disp_pred[joint] - disp_gt[joint]) ** 2)))
 
 
-def compute_depth_median_ae(
+def compute_disparity_median_ae(
     disp_pred: np.ndarray,
     disp_gt: np.ndarray,
     valid_mask: np.ndarray,
     pred_valid_mask: Optional[np.ndarray] = None,
     min_gt_disp: float = 0.0
 ) -> float:
-    """Median absolute error in disparity over jointly valid evaluation pixels."""
+    """Median absolute error in disparity (pixels) over jointly valid evaluation pixels."""
     eval_mask = valid_mask & np.isfinite(disp_gt) & (disp_gt >= min_gt_disp)
     if pred_valid_mask is not None:
         joint = eval_mask & pred_valid_mask & np.isfinite(disp_pred)
@@ -549,6 +550,12 @@ def compute_depth_median_ae(
     if np.count_nonzero(joint) == 0:
         return float("nan")
     return float(np.median(np.abs(disp_pred[joint] - disp_gt[joint])))
+
+
+# Backward compatibility aliases (note: these compute disparity error in pixels)
+compute_depth_mae = compute_disparity_mae
+compute_depth_rmse = compute_disparity_rmse
+compute_depth_median_ae = compute_disparity_median_ae
 
 
 def compute_valid_coverage(
@@ -659,6 +666,9 @@ def compute_full_disparity_metrics(
     return res
 
 
+evaluate_disparity_map = compute_full_disparity_metrics
+
+
 def disparity_to_depth(
     disp: np.ndarray,
     focal_length_px: float,
@@ -730,23 +740,44 @@ def compute_depth_sensitivity(
 def compute_lr_consistency(
     disp_l: np.ndarray,
     disp_r: np.ndarray,
-    threshold: float = 1.5
+    threshold: float = 1.5,
+    min_disp: float = 0.0
 ) -> Tuple[float, np.ndarray]:
-    """Check round-trip Left-Right consistency across matched scanline points."""
-    h, w = disp_l.shape
-    x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
+    """Check round-trip Left-Right consistency across matched scanline points.
 
-    x_matched = np.clip(np.round(x_coords - disp_l).astype(int), 0, w - 1)
-    r_disp_matched = disp_r[y_coords, x_matched]
+    Convention:
+        Left coordinate x_L matches x_R = x_L - disp_l[y, x_L].
+        Consistency requires that x_R is within image bounds, disp_r at (y, x_R) is valid,
+        and |disp_l(y, x_L) - |disp_r(y, x_R)|| <= threshold.
+    """
+    h, w = disp_l.shape[:2]
+    valid_l = np.isfinite(disp_l) & (disp_l >= min_disp)
 
-    if np.median(disp_r) < 0:
-        r_disp_matched = -r_disp_matched
+    y_coords, x_coords = np.mgrid[0:h, 0:w]
+    x_r_cand = np.round(x_coords - disp_l).astype(int)
 
-    lr_diff = np.abs(disp_l - r_disp_matched)
-    valid_mask = disp_l > 0
-    consistent_mask = (lr_diff <= threshold) & valid_mask
+    # Coordinate must fall strictly within right image boundaries
+    in_bounds = (x_r_cand >= 0) & (x_r_cand < w)
 
-    valid_pixels = np.count_nonzero(valid_mask)
+    consistent_mask = np.zeros((h, w), dtype=bool)
+    eval_mask = valid_l & in_bounds
+
+    if np.any(eval_mask):
+        ys_eval = y_coords[eval_mask]
+        xs_l = x_coords[eval_mask]
+        xs_r = x_r_cand[eval_mask]
+
+        d_l_val = disp_l[ys_eval, xs_l]
+        d_r_val = disp_r[ys_eval, xs_r]
+
+        d_r_mag = np.abs(d_r_val)
+        valid_r = np.isfinite(d_r_val) & (d_r_mag >= min_disp) & (d_r_val != -1.0)
+
+        diff = np.abs(d_l_val - d_r_mag)
+        consistent_pts = valid_r & (diff <= threshold)
+        consistent_mask[ys_eval[consistent_pts], xs_l[consistent_pts]] = True
+
+    valid_pixels = int(np.count_nonzero(valid_l))
     if valid_pixels == 0:
         return 0.0, consistent_mask
 
@@ -757,20 +788,40 @@ def compute_lr_consistency(
 def compute_photometric_warp_mae(
     left_img: np.ndarray,
     right_img: np.ndarray,
-    disp_l: np.ndarray
+    disp_l: np.ndarray,
+    min_disp: float = 0.0
 ) -> float:
-    """Compute mean absolute difference between left image and warped right image."""
-    h, w = disp_l.shape
+    """Compute mean absolute difference between left image and warped right image.
+
+    Only evaluates pixels where disparity is valid and the projected coordinate
+    in the right image falls strictly within [0, width - 1].
+    """
+    h, w = disp_l.shape[:2]
     gray_l = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY).astype(np.float32) if left_img.ndim == 3 else left_img.astype(np.float32)
     gray_r = cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY).astype(np.float32) if right_img.ndim == 3 else right_img.astype(np.float32)
 
-    x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
-    x_warp = np.clip(x_coords - disp_l, 0, w - 1).astype(np.float32)
-    warped_r = cv2.remap(gray_r, x_warp, y_coords.astype(np.float32), cv2.INTER_LINEAR)
+    y_coords, x_coords = np.mgrid[0:h, 0:w].astype(np.float32)
+    x_warp = x_coords - disp_l
 
-    valid_mask = disp_l > 0
+    # Valid mask: valid disparity and warped coordinate strictly inside right image
+    valid_mask = (
+        np.isfinite(disp_l)
+        & (disp_l >= min_disp)
+        & (x_warp >= 0.0)
+        & (x_warp <= float(w - 1))
+    )
+
     if np.count_nonzero(valid_mask) == 0:
-        return 999.0
+        return float("nan")
+
+    warped_r = cv2.remap(
+        gray_r,
+        x_warp,
+        y_coords,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
 
     mae = float(np.mean(np.abs(gray_l[valid_mask] - warped_r[valid_mask])))
     return mae

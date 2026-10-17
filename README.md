@@ -104,16 +104,16 @@ Table 1: Synthetic Benchmark Performance Across Matchers and Perturbations
 
 | Scene & Perturbation | StereoBM Bad@2 | StereoBM Cov | StereoSGBM Bad@2 | StereoSGBM Cov | SGBM Latency |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Constant (Clean)** | 0.00% | 84.2% | **0.00%** | **84.2%** | 4.91 ms |
-| **Constant (Noise $\sigma=15$)** | 0.01% | 84.2% | **0.01%** | **84.2%** | 5.03 ms |
-| **Constant (Gamma $\gamma=1.6$)** | 0.35% | 78.4% | **0.22%** | **79.9%** | 8.62 ms |
-| **Layered (Clean)** | 2.48% | 77.6% | **2.03%** | **86.7%** | 13.27 ms |
-| **Layered (Brightness +30)** | 2.51% | 76.8% | **2.26%** | **85.6%** | 10.85 ms |
-| **Layered (Contrast 0.5x)** | 3.12% | 75.1% | **2.36%** | **86.6%** | 11.67 ms |
-| **Layered (Noise $\sigma=15$)** | 9.72% | 12.9% | **6.02%** | **81.0%** | 12.45 ms |
-| **Layered (Gamma $\gamma=1.6$)** | 3.05% | 76.2% | **1.76%** | **85.2%** | 15.66 ms |
+| **Constant (Clean)** | 0.00% | 80.5% | **0.00%** | **84.2%** | 12.86 ms |
+| **Constant (Noise $\sigma=15$)** | 0.01% | 22.8% | **0.01%** | **84.2%** | 11.53 ms |
+| **Constant (Gamma $\gamma=1.6$)** | 0.35% | 80.5% | **0.22%** | **79.9%** | 18.53 ms |
+| **Layered (Clean)** | 2.48% | 77.6% | **2.03%** | **86.7%** | 16.41 ms |
+| **Layered (Brightness +30)** | 2.51% | 77.6% | **2.26%** | **85.6%** | 28.69 ms |
+| **Layered (Contrast 0.5x)** | 3.12% | 72.7% | **2.36%** | **86.6%** | 14.34 ms |
+| **Layered (Noise $\sigma=15$)** | 9.72% | 12.9% | **6.02%** | **81.0%** | 16.75 ms |
+| **Layered (Gamma $\gamma=1.6$)** | 3.05% | 77.3% | **1.76%** | **85.2%** | 22.71 ms |
 
-Under clean conditions, SGBM recovers layered disparities with a 2.03% bad-pixel rate (pixels where $|d_{\mathrm{pred}} - d_{\mathrm{gt}}| > 2.0$ px). Under additive Gaussian noise ($\sigma = 15$), local StereoBM coverage collapses from 77.6% to 12.9% because window SAD costs fail confidence checks. In contrast, SGBM maintains 81.0% coverage with 6.02% bad-pixel error, demonstrating the stabilizing effect of directional dynamic programming paths.
+Under clean conditions, SGBM recovers layered disparities with a 2.03% bad-pixel rate (pixels where $|d_{\mathrm{pred}} - d_{\mathrm{gt}}| > 2.0$ px). Under additive Gaussian noise ($\sigma = 15$), local StereoBM coverage collapses from 77.6% to 12.9% on the layered scene (and to 22.8% on the constant scene) because window SAD costs fail confidence checks. In contrast, SGBM maintains 81.0% coverage with 6.02% bad-pixel error, demonstrating the stabilizing effect of directional dynamic programming paths.
 
 ---
 
@@ -122,7 +122,7 @@ Under clean conditions, SGBM recovers layered disparities with a 2.03% bad-pixel
 The pipeline was benchmarked across 15 publicly available labeled training scenes from the Middlebury 2014 dataset (MiddEval3) using subpixel ground-truth PFM disparities under non-occluded evaluation masks (`mask0nocc.png`).
 
 > [!NOTE]
-> Middlebury evaluations presented here are offline research evaluations on public labeled training scenes at 0.5x scale, not an official benchmark submission to the Middlebury evaluation server.
+> **Resolution Hierarchy and Evaluation Protocol:** Middlebury 2014 provides scenes at Full (F), Half (H), and Quarter (Q) resolutions. This repository evaluates scenes stored under `data/middlebury/MiddEval3/trainingQ/` (Quarter resolution). Evaluating with `scale = 0.5` operates on 0.5x of Quarter resolution (1/8 of native Full resolution), upscaled back to Quarter resolution via normalized linear convolution to prevent invalid boundary zero-bleed. Evaluations are offline research runs on public labeled training scenes, not an official benchmark submission to the Middlebury evaluation server.
 
 ![Middlebury 2014 benchmark evaluation](assets/fig02_middlebury.png)
 *Figure 2: Middlebury 2014 benchmark evaluation on Jadeplant at 0.5x scale. Panels show left view, reference disparity from PFM, non-occluded mask, raw SGBM, WLS filtered SGBM, and spatial error map. [Vector PDF](assets/fig02_middlebury.pdf)*
@@ -133,31 +133,30 @@ Table 2: Middlebury 2014 Benchmark Results Across 15 Scenes (0.5x Scale)
 
 | Scene | Disparity Range | Bad@2.0 (%) | Disp MAE (px) | Depth MAE (m) | Coverage (%) | CPU Latency (ms) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Adirondack** | 73 px | **9.26%** | 1.54 px | 0.039 m | 87.9% | 11.21 ms |
-| **ArtL** | 64 px | 26.10% | 3.07 px | 0.072 m | 78.5% | 1.78 ms |
-| **Jadeplant** | 160 px | 23.54% | 7.01 px | 0.066 m | 68.6% | 8.53 ms |
-| **Motorcycle** | 70 px | **7.78%** | 1.27 px | 0.057 m | 88.8% | 20.51 ms |
-| **MotorcycleE** | 70 px | 8.60% | 1.50 px | 0.067 m | 84.7% | 16.75 ms |
-| **Piano** | 65 px | 19.61% | 1.72 px | 0.068 m | 86.5% | 13.97 ms |
-| **PianoL** | 65 px | 30.87% | 6.97 px | 0.177 m | 69.0% | 15.27 ms |
-| **Pipes** | 75 px | 15.56% | 2.85 px | 0.297 m | 86.3% | 25.55 ms |
-| **Playroom** | 83 px | 14.62% | 2.12 px | 0.053 m | 88.1% | 16.05 ms |
-| **Playtable** | 73 px | 13.00% | 1.55 px | 0.048 m | 88.2% | 11.64 ms |
-| **PlaytableP** | 73 px | 12.12% | 1.49 px | 0.049 m | 88.3% | 17.35 ms |
-| **Recycle** | 65 px | **8.69%** | 1.10 px | 0.028 m | 86.1% | 16.19 ms |
-| **Shelves** | 60 px | 27.17% | 2.42 px | 0.090 m | 89.6% | 18.26 ms |
-| **Teddy** | 64 px | **9.66%** | 1.04 px | 0.016 m | 90.6% | 4.23 ms |
-| **Vintage** | 190 px | 22.85% | 2.83 px | 0.042 m | 73.8% | 15.02 ms |
-| **Macro Average** | **81 px** | **16.63%** | **2.57 px** | **0.078 m** | **83.7%** | **14.15 ms** |
+| **Adirondack** | 73 px | **8.66%** | 1.50 px | 0.038 m | 87.9% | 19.07 ms |
+| **ArtL** | 64 px | 24.38% | 2.85 px | 0.065 m | 78.8% | 3.33 ms |
+| **Jadeplant** | 160 px | 22.03% | 6.61 px | 0.062 m | 68.8% | 13.98 ms |
+| **Motorcycle** | 70 px | **7.56%** | 1.24 px | 0.055 m | 88.9% | 9.85 ms |
+| **MotorcycleE** | 70 px | 7.84% | 1.43 px | 0.061 m | 84.9% | 9.33 ms |
+| **Piano** | 65 px | 19.48% | 1.70 px | 0.066 m | 86.8% | 8.05 ms |
+| **PianoL** | 65 px | 29.69% | 7.06 px | 0.172 m | 69.3% | 7.70 ms |
+| **Pipes** | 75 px | 14.99% | 2.83 px | 0.291 m | 86.4% | 7.45 ms |
+| **Playroom** | 83 px | 13.96% | 2.05 px | 0.050 m | 88.2% | 11.33 ms |
+| **Playtable** | 73 px | 12.50% | 1.50 px | 0.046 m | 88.3% | 7.76 ms |
+| **PlaytableP** | 73 px | 11.74% | 1.45 px | 0.048 m | 88.4% | 18.69 ms |
+| **Recycle** | 65 px | **8.10%** | 1.06 px | 0.027 m | 86.1% | 26.78 ms |
+| **Shelves** | 60 px | 26.70% | 2.39 px | 0.088 m | 89.6% | 13.17 ms |
+| **Teddy** | 64 px | **9.19%** | 0.99 px | 0.015 m | 90.6% | 7.97 ms |
+| **Vintage** | 190 px | 22.24% | 2.60 px | 0.038 m | 73.8% | 10.52 ms |
+| **Macro Average** | **81 px** | **15.94%** | **2.48 px** | **0.075 m** | **83.8%** | **11.67 ms** |
 
 Across all 15 scenes at 0.5x scale:
-- Macro average Bad@2.0 error: **16.63%**
-- Mean valid prediction coverage: **83.67%**
-- Completeness-aware Bad@2.0 error: **29.88%**
-- Mean depth triangulation error: **7.8 cm** ($0.078$ m) at an average CPU latency of **14.15 ms**.
+- Macro average Bad@2.0 error: **15.94%**
+- Mean valid prediction coverage: **83.77%**
+- Mean depth triangulation error: **7.5 cm** ($0.075$ m) at an average CPU latency of **11.67 ms**.
 
 At native 1.0x resolution on the Jadeplant reference scene:
-- Bad@2.0 error drops to **11.42%**, depth MAE is **3.48 cm**, and matching latency is **47.62 ms**.
+- Bad@2.0 error drops to **11.42%**, depth MAE is **3.48 cm**, and matching latency is **52.17 ms**.
 
 ### Post-Processing Filter Ablation: Accuracy Versus Completeness
 
@@ -178,17 +177,17 @@ Table 3: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x 
 
 | Filter Mode | Bad@2.0 Cond (%) | Bad@2.0 CA (%) | Valid Coverage (%) | Match Latency | Filter Latency | Total Latency |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **raw** | 11.42% | 38.64% | 69.27% | 42.5 ms | **0.9 ms** | **43.4 ms** |
-| **median_valid** | **11.55%** | **38.73%** | **69.27%** | 42.5 ms | 4.6 ms | 47.1 ms |
-| **guided** | 46.93% | 63.24% | 69.27% | 42.5 ms | 18.3 ms | 60.8 ms |
-| **joint_bilateral** | 19.38% | 44.16% | 69.27% | 42.5 ms | 14.9 ms | 57.4 ms |
-| **wls** | 26.89% | 41.90% | 79.46% | 84.8 ms | 26.6 ms | 111.4 ms |
-| **confidence_edge** | **4.41%** | **60.73%** | **41.08%** | 84.8 ms | 28.9 ms | 113.6 ms |
+| **raw** | 11.42% | 38.64% | 69.27% | 50.9 ms | **1.2 ms** | **52.2 ms** |
+| **median_valid** | **11.41%** | **38.64%** | **69.27%** | 50.9 ms | 7.7 ms | 58.6 ms |
+| **guided** | 35.67% | 55.44% | 69.27% | 50.9 ms | 34.8 ms | 85.7 ms |
+| **joint_bilateral** | 13.26% | 39.91% | 69.27% | 50.9 ms | 17.6 ms | 68.6 ms |
+| **wls** | 26.89% | 41.90% | 79.46% | 99.3 ms | 28.4 ms | 127.7 ms |
+| **confidence_edge** | **4.41%** | **60.73%** | **41.08%** | 99.3 ms | 30.0 ms | 129.3 ms |
 
 #### Key Insights on Post-Processing:
 1. **The Conditional Accuracy Fallacy:** `confidence_edge` appears superior if judged strictly by conditional Bad@2 (4.41%). However, it rejects 58.9% of evaluable pixels. Its completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}} = 1 - \mathrm{Cov} + \mathrm{Cov} \cdot \mathrm{Bad}_{\mathrm{valid}}$) jumps to **60.73%**, far worse than raw SGBM (38.64%).
-2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This doubles matching latency from 42.5 ms to 84.8 ms and adds 26.6 ms filter overhead (total 111.4 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%.
-3. **Median Valid is Pareto-Optimal:** `median_valid` cleans isolated disparity spikes while preserving valid masks without sentinel bleeding, adding only 4.6 ms filter overhead.
+2. **WLS Filtering Overhead and Edge Blurring:** WLS requires dual-pass matching (left-to-right and right-to-left) plus solving a large sparse linear system. This doubles matching latency from 50.9 ms to 99.3 ms and adds 28.4 ms filter overhead (total 127.7 ms). Furthermore, WLS blurs depth discontinuities on this scene, worsening conditional Bad@2 from 11.42% to 26.89%.
+3. **Median Valid Boundary Preservation:** `median_valid` cleans isolated disparity spikes while dilating valid values into immediate invalid neighbors to eliminate zero-bleed corruption at boundaries (11.41% Bad@2 with 7.7 ms filter overhead). Across the full parameter space, smaller block sizes (e.g. bs = 3, 46.2 ms, 7.74% Bad@2) and `confidence_edge` (129.3 ms, 4.41% Bad@2) form the non-dominated Pareto frontier.
 
 ---
 
@@ -199,9 +198,9 @@ Table 3: Filter Benchmark Comparison on Reference Scene (Jadeplant, Native 1.0x 
 
 ### Algorithmic Levers on CPU
 
-1. **Resolution Scaling (Dominant Lever):** Scaling 720p input down to 360p ($0.5\times$) yields a **$6.2\times$ speedup** (41.4 ms vs 133 ms). At 180p ($0.25\times$), SGBM exceeds 130 FPS on CPU.
-2. **Block Size Sensitivity:** In a 15-configuration search, block size 5 strictly dominated block size 7 across all metrics: it executes over $2\times$ faster (133 ms vs 338 ms) and achieves lower error (9.97% vs 11.42%) due to reduced window-over-smoothing at sharp depth boundaries.
-3. **Thread Scaling:** Multi-threading scales effectively up to 8 threads, with diminishing returns beyond 8 threads due to CPU cache and memory bandwidth saturation.
+1. **Resolution Scaling (Dominant Lever):** Scaling 720p input (159.4 ms, 6.3 FPS) down to 360p ($0.5\times$, 22.6 ms, 44.2 FPS) yields a **$7.0\times$ speedup**. At 180p ($0.25\times$, 5.8 ms), SGBM executes at 172.6 FPS on single-channel CPU.
+2. **Block Size Sensitivity:** In an audited 4-configuration sweep (bs $\in [3, 5, 7, 9]$), block size 3 achieved the lowest error (7.74% Bad@2) and fastest runtime (46.2 ms), while block size 5 (9.56% Bad@2, 52.6 ms) achieved lower error than block size 7 (11.42% Bad@2, 55.4 ms) due to reduced window over-smoothing at sharp depth boundaries.
+3. **Thread Scaling:** Multi-threading scales effectively up to 8 threads (51.7 ms on 1 thread down to 25.3 ms on 8 threads, a $2.04\times$ speedup), with saturation beyond 8 threads due to memory bandwidth limits.
 
 ```text
 Table 4: Measured Pipeline Presets on 720p Input Images
@@ -209,9 +208,9 @@ Table 4: Measured Pipeline Presets on 720p Input Images
 
 | Preset | Scale Factor | Disparities | Block Size | Post-Filter | Pipeline Latency | Measured FPS | Jadeplant Bad@2 (Cond / CA) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **FAST** | $0.5\times$ (360p) | 80 px | 5 px | `median_valid` | 41.4 – 79.5 ms | 12.6 – 24.2 FPS | 21.6% / 46.1% |
-| **BALANCED** | $0.75\times$ (540p) | 128 px | 5 px | `median_valid` | 81.1 – 178.9 ms | 5.6 – 12.3 FPS | 16.3% / 43.8% |
-| **QUALITY** | $1.0\times$ (720p) | 160 px | 5 px | `median_valid` | 133.0 – 491.5 ms | 2.0 – 7.5 FPS | **10.0% / 37.1%** |
+| **FAST** | .5\times$ (360p) | 80 px | 5 px | median_valid | 50.3 ms | 19.9 FPS | 21.6% / 46.1% |
+| **BALANCED** | .75\times$ (540p) | 128 px | 5 px | median_valid | 102.8 ms | 9.7 FPS | 16.3% / 43.8% |
+| **QUALITY** | .0\times$ (720p) | 160 px | 5 px | median_valid | 167.7 ms | 6.0 FPS | **10.0% / 37.1%** |
 
 These three presets form a strictly monotonic Pareto frontier balancing latency and reconstruction fidelity on standard multi-core CPUs.
 
@@ -224,6 +223,9 @@ To evaluate classical stereo outside laboratory environments, the calibrated pip
 2. `puncakWarung`: Roadside stall area with corrugated tin roofing and deep shadow occlusions.
 3. `tanggaBiru`: Steep trail stairway bounded by painted blue steel railings.
 4. `tanggaKuning`: Natural soil and stone steps bounded by painted yellow railings.
+
+> [!NOTE]
+> **Dataset Availability:** Raw Gunung volcanic field imagery and calibration archives are not distributed in the public git repository. The numerical results presented below reflect unverified historical evaluations preserved in `results/gunung.csv`.
 
 ![Four Gunung volcanic terrains evaluation](assets/fig03_gunung.png)
 *Figure 3: Four Gunung volcanic terrains evaluated under calibrated stereo and active IR RealSense ground truth. [Vector PDF](assets/fig03_gunung.pdf)*
@@ -261,7 +263,7 @@ Geometric analysis identified two root causes:
 
 In `puncakWarung`, scene geometry exceeds 15 meters (all detected SIFT keypoints have depths $Z > 15.6$ m). The Intel RealSense D435i active IR emitter operates up to 3–6 meters in daylight; beyond 10 meters, active IR returns drop to zero. StereoSGBM successfully reconstructs the scene, but depth error against RealSense is documented honestly as unmeasured.
 
-Across the three valid near-field terrains, classical SGBM achieves median metric depth errors of **5.9 cm** (`puncakTinggi`), **7.6 cm** (`tanggaBiru`), and **6.1 cm** (`tanggaKuning`), with over 88% of evaluated surface points within 25% of true distance ($\delta < 1.25$).
+Across the three valid near-field terrains, classical SGBM achieves median metric depth errors of **5.9 cm** (`puncakTinggi`), **7.6 cm** (`tanggaBiru`), and **6.1 cm** (`tanggaKuning`). While `puncakTinggi` (88.4%) and `tanggaKuning` (88.2%) achieve $\delta < 1.25$ above 88%, `tanggaBiru` achieves 70.5% (average 82.4% across the three valid near-field terrains, with `puncakWarung` unmeasured due to distance).
 
 ### Cross-Dataset Generalization
 
@@ -317,16 +319,16 @@ Training requires **5.3 seconds** on CPU. Learned Conv1 filter kernels specializ
 
 ### What Worked
 
-1. **Classical SGBM Metric Triangulation:** With accurate epipolar rectification, classical SGBM achieves 5.9–7.6 cm median depth accuracy on outdoor volcanic terrain and 7.8 cm macro-average across 15 Middlebury scenes.
-2. **Resolution Scaling for Real-Time CPU Throughput:** Downscaling input resolution to $0.5\times$ (360p) provides a $6.2\times$ matching speedup, delivering 12.6–24.2 FPS on commodity CPU hardware.
-3. **Validity-Aware Median Filtering:** `median_valid` suppresses isolated disparity spikes without smoothing true depth boundaries or bleeding invalid sentinel values (adding only 4.6 ms overhead).
+1. **Classical SGBM Metric Triangulation:** With accurate epipolar rectification, classical SGBM achieves 5.9 to 7.6 cm median depth accuracy on outdoor volcanic terrain and 7.5 cm macro-average across 15 Middlebury scenes.
+2. **Resolution Scaling for Real-Time CPU Throughput:** Downscaling input resolution to $0.5\times$ (360p) provides a $7.0\times$ matching speedup, delivering 44.2 FPS at 360p and 172.6 FPS at 180p on single-channel CPU.
+3. **Validity-Aware Median Filtering:** `median_valid` suppresses isolated disparity spikes without smoothing true depth boundaries or bleeding invalid sentinel values (adding 7.7 ms overhead with boundary dilation).
 4. **Compact Feature Learning:** A 1,054-parameter CNN outperforms hand-crafted MAD (+4.47 pp accuracy, $p = 0.0074$) while training in 5.3 seconds on CPU.
 5. **Completeness-Aware Metric Evaluation:** Evaluating completeness-aware error ($\mathrm{Bad}_{\mathrm{CA}}$) exposes artificial accuracy gains caused by confidence thresholding.
 
 ### What Failed
 
-1. **WLS Disparity Filtering:** Dual-pass matching and sparse matrix solving doubled latency (from 43.4 ms to 111.4 ms) while smoothing sharp depth boundaries, increasing conditional Bad@2 on Jadeplant from 11.42% to 26.89%.
-2. **Cross-Terrain Camera Extrinsic Transfer:** Rig extrinsics estimated on one site degraded median depth error from 0.076 m to 0.181 m on another site due to physical rig flexure during transport ($2.6^\circ$–$4.7^\circ$ rotation shifts) and collinear SIFT feature distributions along handrails.
+1. **WLS Disparity Filtering:** Dual-pass matching and sparse matrix solving doubled latency (from 52.2 ms to 127.7 ms) while smoothing sharp depth boundaries, increasing conditional Bad@2 on Jadeplant from 11.42% to 26.89%.
+2. **Cross-Terrain Camera Extrinsic Transfer:** Rig extrinsics estimated on one site degraded median depth error from 0.076 m to 0.181 m on another site due to physical rig flexure during transport ($2.6^\circ$ to $4.7^\circ$ rotation shifts) and collinear SIFT feature distributions along handrails.
 3. **Active IR Depth in Far-Field Daylight:** In `puncakWarung` ($Z > 15$ m), solar ambient radiation completely washed out the active IR projection pattern, leaving stereo unmeasured against RealSense.
 4. **Conditional Error Optimization Alone:** Aggressive confidence thresholding (`confidence_edge`) dropped conditional Bad@2 to 4.41% by discarding 58.9% of evaluable pixels, blowing up completeness-aware error to 60.73%.
 5. **Dense CNN Stereo on CPU:** While 0.041 ms per patch is fast, evaluating a dense 720p image grid requires millions of forward passes, confirming that classical SGBM remains superior for real-time CPU deployment.

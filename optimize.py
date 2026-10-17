@@ -50,21 +50,27 @@ def apply_filter(
         return disp_raw.copy()
 
     elif name in ["median_valid", "f2_median", "median"]:
-        # Apply 3x3 median blur over valid pixels only, preserving invalid sentinels
-        disp_zero_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
-        med = cv2.medianBlur(disp_zero_filled, 3)
+        # Dilate valid values into immediate invalid neighbors to prevent zero-bleed at borders
+        d_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
+        d_dilated = cv2.dilate(d_filled, np.ones((3, 3), np.uint8))
+        d_prep = np.where(valid_mask, disp_raw, d_dilated)
+        med = cv2.medianBlur(d_prep, 3)
         return np.where(valid_mask, med, -1.0)
 
     elif name in ["guided", "f3_guided"]:
         gray = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY) if left_img.ndim == 3 else left_img
-        disp_zero_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
-        gf = cv2.ximgproc.guidedFilter(guide=gray, src=disp_zero_filled, radius=5, eps=1.0)
+        d_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
+        d_dilated = cv2.dilate(d_filled, np.ones((5, 5), np.uint8))
+        d_prep = np.where(valid_mask, disp_raw, d_dilated)
+        gf = cv2.ximgproc.guidedFilter(guide=gray, src=d_prep, radius=5, eps=1.0)
         return np.where(valid_mask, gf, -1.0)
 
     elif name in ["joint_bilateral", "f4_joint_bilateral"]:
         img_f = left_img.astype(np.float32) / 255.0
-        disp_zero_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
-        jb = cv2.ximgproc.jointBilateralFilter(joint=img_f, src=disp_zero_filled, d=5, sigmaColor=0.1, sigmaSpace=5)
+        d_filled = np.where(valid_mask, disp_raw, 0.0).astype(np.float32)
+        d_dilated = cv2.dilate(d_filled, np.ones((5, 5), np.uint8))
+        d_prep = np.where(valid_mask, disp_raw, d_dilated)
+        jb = cv2.ximgproc.jointBilateralFilter(joint=img_f, src=d_prep, d=5, sigmaColor=0.1, sigmaSpace=5)
         return np.where(valid_mask, jb, -1.0)
 
     elif name in ["wls", "f5_wls"]:
@@ -260,24 +266,24 @@ def run_stereo_pipeline(
         d_raw = np.where(raw_valid, dl.astype(np.float32) / 16.0, -1.0)
 
         filt_name = cfg.get("filter", "median_valid")
-        if filt_name == "median_valid":
-            disp_zero_filled = np.where(raw_valid, d_raw, 0.0).astype(np.float32)
-            med = cv2.medianBlur(disp_zero_filled, 3)
-            d_filt = np.where(raw_valid, med, -1.0)
-        elif filt_name in ["raw", "none"]:
+        if filt_name in ["raw", "none"]:
             d_filt = d_raw
         else:
             d_filt = apply_filter(filt_name, d_raw, l_in)
         t_filt = (time.perf_counter() - t_filt0) * 1000.0
 
-    # Stage 4: Upscale disparity if downscaled
+    # Stage 4: Upscale disparity if downscaled (normalized convolution)
     t_up0 = time.perf_counter()
     if scale != 1.0:
-        valid_mask_in = (d_filt >= 0.0)
+        valid_mask_in = (d_filt >= 0.0) & np.isfinite(d_filt)
         disp_filled = np.where(valid_mask_in, d_filt, 0.0).astype(np.float32)
-        d_up = cv2.resize(disp_filled, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
-        mask_up = cv2.resize(valid_mask_in.astype(np.uint8), (w_orig, h_orig), interpolation=cv2.INTER_NEAREST) > 0
-        d_out = np.where(mask_up, d_up, -1.0)
+        w_m = valid_mask_in.astype(np.float32)
+        d_up = cv2.resize(disp_filled, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        w_up = cv2.resize(w_m, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        valid_up = w_up >= 0.5
+        d_norm = np.zeros_like(d_up)
+        d_norm[valid_up] = (d_up[valid_up] / w_up[valid_up]) * (1.0 / scale)
+        d_out = np.where(valid_up, d_norm, -1.0)
     else:
         d_out = d_filt
     t_up = (time.perf_counter() - t_up0) * 1000.0
@@ -303,6 +309,51 @@ def run_stereo_pipeline(
 # ---------------------------------------------------------------------------
 # SGBM Parameter Search and Filter Benchmark
 # ---------------------------------------------------------------------------
+
+def compute_pareto_frontier(
+    df: pd.DataFrame,
+    latency_col: str = "total_ms",
+    error_col: str = "bad2_pct",
+    minimize_latency: bool = True,
+    minimize_error: bool = True
+) -> pd.Series:
+    """Compute boolean mask of non-dominated Pareto configurations.
+
+    A configuration A dominates B if:
+    1. A is no worse than B in both latency and error.
+    2. A is strictly better than B in at least one metric.
+
+    Returns:
+        Boolean Series with True for non-dominated (Pareto-optimal) points.
+    """
+    is_pareto = []
+    n = len(df)
+    latencies = df[latency_col].values
+    errors = df[error_col].values
+
+    for i in range(n):
+        l_i = latencies[i]
+        e_i = errors[i]
+        dominated = False
+        for j in range(n):
+            if i == j:
+                continue
+            l_j = latencies[j]
+            e_j = errors[j]
+
+            better_or_equal_lat = (l_j <= l_i) if minimize_latency else (l_j >= l_i)
+            better_or_equal_err = (e_j <= e_i) if minimize_error else (e_j >= e_i)
+
+            strictly_better_lat = (l_j < l_i) if minimize_latency else (l_j > l_i)
+            strictly_better_err = (e_j < e_i) if minimize_error else (e_j > e_i)
+
+            if better_or_equal_lat and better_or_equal_err and (strictly_better_lat or strictly_better_err):
+                dominated = True
+                break
+        is_pareto.append(not dominated)
+
+    return pd.Series(is_pareto, index=df.index, name="is_pareto")
+
 
 def run_parameter_and_filter_search(
     sample_scene_dir: Optional[Path] = None,
@@ -408,6 +459,7 @@ def run_parameter_and_filter_search(
         })
 
     df = pd.DataFrame(rows)
+    df["is_pareto"] = compute_pareto_frontier(df, latency_col="total_ms", error_col="bad2_pct")
     if save_csv:
         csv_path = RESULTS_DIR / "optimization.csv"
         df.to_csv(csv_path, index=False)
@@ -421,20 +473,36 @@ def run_parameter_and_filter_search(
 
 def run_cpu_profiling(
     input_image: Optional[np.ndarray] = None,
+    right_image: Optional[np.ndarray] = None,
     iterations: int = 10,
     save_json: bool = True
 ) -> Dict[str, Any]:
     """Profile CPU execution across resolutions (720p, 360p, 180p) and threads (1 to 16)."""
-    if input_image is None:
-        # Load a 720p Gunung image or create a 1280x720 dummy image
-        pt_path = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi" / "stereo" / "left_0000.png"
-        if pt_path.exists():
-            input_image = cv2.imread(str(pt_path))
+    if input_image is None or right_image is None:
+        pt_left = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi" / "stereo" / "left_0000.png"
+        pt_right = field.DEFAULT_GUNUNG_ROOT / "puncakTinggi" / "stereo" / "right_0000.png"
+        jp_left = field.DEFAULT_MIDDLEBURY_ROOT / "Jadeplant" / "im0.png"
+        jp_right = field.DEFAULT_MIDDLEBURY_ROOT / "Jadeplant" / "im1.png"
+
+        if pt_left.exists() and pt_right.exists():
+            input_image = cv2.imread(str(pt_left))
+            right_image = cv2.imread(str(pt_right))
+        elif jp_left.exists() and jp_right.exists():
+            # Resize Middlebury Jadeplant to 720p (1280x720) for standardized CPU profiling
+            im0 = cv2.imread(str(jp_left))
+            im1 = cv2.imread(str(jp_right))
+            input_image = cv2.resize(im0, (1280, 720), interpolation=cv2.INTER_AREA)
+            right_image = cv2.resize(im1, (1280, 720), interpolation=cv2.INTER_AREA)
         else:
-            input_image = np.random.randint(0, 255, (720, 1280, 3), dtype=np.uint8)
+            synth_l, synth_r, _, _ = stereo.generate_layered_synthetic_scene(1280, 720, seed=42)
+            input_image = synth_l
+            right_image = synth_r
 
     h_full, w_full = input_image.shape[:2]
-    right_image = input_image.copy()
+
+    # Convert to 1-channel grayscale to benchmark single-channel OpenCV SGBM matching
+    gray_full_l = cv2.cvtColor(input_image, cv2.COLOR_BGR2GRAY) if input_image.ndim == 3 else input_image
+    gray_full_r = cv2.cvtColor(right_image, cv2.COLOR_BGR2GRAY) if right_image.ndim == 3 else right_image
 
     # Resolution scaling experiments
     scales = {"720p": 1.0, "360p": 0.5, "180p": 0.25}
@@ -442,8 +510,8 @@ def run_cpu_profiling(
 
     for res_name, sc in scales.items():
         w_s, h_s = int(w_full * sc), int(h_full * sc)
-        img_l = cv2.resize(input_image, (w_s, h_s), interpolation=cv2.INTER_AREA)
-        img_r = cv2.resize(right_image, (w_s, h_s), interpolation=cv2.INTER_AREA)
+        img_l = cv2.resize(gray_full_l, (w_s, h_s), interpolation=cv2.INTER_AREA)
+        img_r = cv2.resize(gray_full_r, (w_s, h_s), interpolation=cv2.INTER_AREA)
 
         num_disp = int(np.ceil((160 * sc) / 16.0) * 16)
         matcher = stereo.create_sgbm_matcher(num_disparities=num_disp, block_size=5)
@@ -468,8 +536,8 @@ def run_cpu_profiling(
         }
 
     # Threading experiments at 360p (balanced configuration)
-    img_360_l = cv2.resize(input_image, (640, 360), interpolation=cv2.INTER_AREA)
-    img_360_r = cv2.resize(right_image, (640, 360), interpolation=cv2.INTER_AREA)
+    img_360_l = cv2.resize(gray_full_l, (640, 360), interpolation=cv2.INTER_AREA)
+    img_360_r = cv2.resize(gray_full_r, (640, 360), interpolation=cv2.INTER_AREA)
     m_thread = stereo.create_sgbm_matcher(num_disparities=80, block_size=5)
 
     thread_counts = [1, 2, 4, 8, 16]
@@ -507,7 +575,7 @@ def run_cpu_profiling(
         d_ref, _ = run_stereo_pipeline(im0_ref, im1_ref, preset=p_name)
         m_acc = stereo.compute_full_disparity_metrics(d_ref, disp_gt_ref, mask_ref)
 
-        # Warmup on profiling image
+        # Warmup on profiling image pair
         run_stereo_pipeline(input_image, right_image, preset=p_name)
         p_times = []
         for _ in range(iterations):

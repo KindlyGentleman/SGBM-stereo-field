@@ -26,7 +26,7 @@ import pandas as pd
 import stereo
 import field
 import optimize
-import cnn
+
 
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -98,27 +98,19 @@ def run_quick_verification() -> bool:
         gun_rec, _, _, _ = field.evaluate_gunung_terrain("puncakTinggi")
         print(f"  puncakTinggi: Status = {gun_rec['status']} | Inliers = {gun_rec['inliers']} | Reproj Med = {gun_rec['reproj_med_px']:.2f} px | Depth Med = {gun_rec['depth_median_m']:.3f} m")
     else:
-        print("  Gunung dataset not found; running synthetic field registration demo...")
-        np.random.seed(42)
-        n_pts = 40
-        pts_3d = np.random.uniform([-0.8, -0.8, 1.2], [0.8, 0.8, 3.0], size=(n_pts, 3))
-        R_demo = np.eye(3, dtype=np.float64)
-        t_demo = np.array([-0.015, -0.035, -0.005], dtype=np.float64).reshape(3, 1)
-        K_demo = np.array([[960.0, 0.0, 640.0], [0.0, 960.0, 360.0], [0.0, 0.0, 1.0]], dtype=np.float64)
-        pts_cam = (R_demo @ pts_3d.T + t_demo).T
-        pts_2d = (K_demo @ pts_cam.T).T
-        pts_2d = pts_2d[:, :2] / pts_2d[:, 2:3]
-        pts_2d += np.random.normal(0, 0.3, pts_2d.shape)
-        succ, rvec, tvec, inliers = cv2.solvePnPRansac(pts_3d, pts_2d, K_demo, None, reprojectionError=3.0)
-        inlier_count = len(inliers) if inliers is not None else 0
-        print(f"  Synthetic Demo: Status = VERIFIED | Inliers = {inlier_count} | Reproj Med = 0.48 px | Depth Med = 0.045 m")
+        print("  Gunung dataset or calibration archive not found locally.")
+        print("  Status: UNVERIFIED (dataset missing; preserving historical results)")
 
     # 4. Tiny CNN patch baseline check
     print("\n[4/4] Tiny CNN Model Initialization & Classical Baseline...")
-    import torch
-    net = cnn.TinyStereoNet()
-    n_params = sum(p.numel() for p in net.parameters())
-    print(f"  TinyStereoNet parameters: {n_params} (architecture: Conv2->8, Conv8->12, GAP, Linear12->2)")
+    try:
+        import torch
+        import cnn
+        net = cnn.TinyStereoNet()
+        n_params = sum(p.numel() for p in net.parameters())
+        print(f"  TinyStereoNet parameters: {n_params} (architecture: Conv2->8, Conv8->12, GAP, Linear12->2)")
+    except ImportError as e:
+        print(f"  TinyStereoNet skipped: optional ML dependency not available ({e}).")
 
     print("\n" + "=" * 76)
     print("Quick verification completed successfully.")
@@ -269,6 +261,23 @@ def run_gunung_benchmark(save_csv: bool = True) -> pd.DataFrame:
     print("EXPERIMENT 3: GUNUNG FIELD CALIBRATED STEREO & REALSENSE REGISTRATION")
     print("=" * 76)
 
+    # Check whether local dataset and calibration artifacts are present
+    has_data = (
+        field.DEFAULT_GUNUNG_ROOT.exists()
+        and field.DEFAULT_CALIB_PATH.exists()
+        and any((field.DEFAULT_GUNUNG_ROOT / t / "stereo").exists() for t in field.GUNUNG_TERRAINS)
+    )
+
+    if not has_data:
+        print("  Notice: Gunung field imagery or calibration archive not found locally.")
+        print("  Preserving historical committed results in results/gunung.csv without overwriting.")
+        csv_path = RESULTS_DIR / "gunung.csv"
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            print(df[["terrain", "status", "inliers", "reproj_med_px", "depth_mae_m", "depth_median_m", "delta_125_pct", "runtime_ms"]].to_string(index=False))
+            return df
+        return pd.DataFrame()
+
     df, refs, preds = field.run_gunung_benchmark(field.DEFAULT_GUNUNG_ROOT, field.DEFAULT_CALIB_PATH)
     print(df[["terrain", "status", "inliers", "reproj_med_px", "depth_mae_m", "depth_median_m", "delta_125_pct", "runtime_ms"]].to_string(index=False))
 
@@ -321,11 +330,18 @@ def run_profiling_benchmark(save_json: bool = True) -> Dict[str, Any]:
     return profile_data
 
 
-def run_cnn_benchmark(save_json: bool = True) -> Dict[str, Any]:
+def run_cnn_benchmark(save_json: bool = True) -> Optional[Dict[str, Any]]:
     """Train TinyStereoNet and evaluate on held-out test scenes."""
     print("=" * 76)
     print("EXPERIMENT 6: TINYSTEREONET PATCH CORRESPONDENCE CLASSIFIER")
     print("=" * 76)
+
+    try:
+        import cnn
+    except ImportError as e:
+        print(f"Error: CNN module dependencies missing ({e}).")
+        print("Install optional machine learning dependencies using: pip install -r requirements-ml.txt")
+        return None
 
     metrics = cnn.run_cnn_experiment(save_json=save_json)
     print("\nCNN Training and Test Evaluation Complete:")

@@ -77,3 +77,48 @@ def test_invalid_filter_and_preset_exceptions():
 
     with pytest.raises(ValueError, match="Unknown preset"):
         optimize.run_stereo_pipeline(img, img, preset="SUPER_FAST")
+
+
+def test_median_valid_no_zero_bleed_at_borders():
+    """Verify that median_valid does not collapse boundary valid disparities to 0.0."""
+    # Create 10x10 map: left 5 columns valid with disparity 24.0, right 5 columns invalid (-1.0)
+    disp = np.full((10, 10), -1.0, dtype=np.float32)
+    disp[:, :5] = 24.0
+    img = np.zeros((10, 10), dtype=np.uint8)
+
+    f_med = optimize.apply_filter("median_valid", disp, img)
+
+    # Column 4 is right at the border of invalid pixels.
+    # Under old zero-fill, more than half of the 3x3 window was 0.0, collapsing column 4 to 0.0.
+    # Under dilate-fill, column 4 must remain valid with disparity 24.0.
+    assert np.all(f_med[:, :5] == 24.0)
+    assert np.all(f_med[:, 5:] == -1.0)
+
+
+def test_compute_pareto_frontier():
+    """Verify Pareto frontier correctly identifies non-dominated configurations."""
+    import pandas as pd
+    df = pd.DataFrame([
+        {"name": "A", "total_ms": 20.0, "bad2_pct": 10.0},  # Pareto optimal (fastest)
+        {"name": "B", "total_ms": 30.0, "bad2_pct": 5.0},   # Pareto optimal (most accurate)
+        {"name": "C", "total_ms": 25.0, "bad2_pct": 12.0},  # Dominated by A (slower and higher error)
+        {"name": "D", "total_ms": 35.0, "bad2_pct": 8.0},   # Dominated by B (slower and higher error)
+    ])
+
+    is_pareto = optimize.compute_pareto_frontier(df, latency_col="total_ms", error_col="bad2_pct")
+    assert list(is_pareto) == [True, True, False, False]
+
+
+def test_cpu_profiling_runs_and_returns_structure():
+    """Verify run_cpu_profiling executes and records resolutions, threads, and presets."""
+    prof = optimize.run_cpu_profiling(iterations=1, save_json=False)
+    assert "resolutions" in prof
+    assert "threads" in prof
+    assert "presets" in prof
+    assert "720p" in prof["resolutions"]
+    assert "360p" in prof["resolutions"]
+    assert "180p" in prof["resolutions"]
+    assert "FAST" in prof["presets"]
+    assert "BALANCED" in prof["presets"]
+    assert "QUALITY" in prof["presets"]
+

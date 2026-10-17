@@ -154,24 +154,29 @@ def evaluate_middlebury_scene(
     else:
         disp_pred, _ = stereo.compute_disparity_sgbm(in0, in1, matcher)
 
-    # Upscale back to native resolution if scaled (preserving negative sentinels)
+    # Upscale back to native resolution if scaled (normalized convolution to prevent zero-fill boundary bleed)
     if scale != 1.0:
-        valid_m = disp_pred >= 0.0
+        valid_m = (disp_pred >= 0.0) & np.isfinite(disp_pred)
         d_fill = np.where(valid_m, disp_pred, 0.0).astype(np.float32)
-        d_up = cv2.resize(d_fill, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * (1.0 / scale)
-        m_up = cv2.resize(valid_m.astype(np.uint8), (w_orig, h_orig), interpolation=cv2.INTER_NEAREST) > 0
-        disp_pred = np.where(m_up, d_up, -1.0)
+        w_m = valid_m.astype(np.float32)
+        d_up = cv2.resize(d_fill, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        w_up = cv2.resize(w_m, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        valid_up = w_up >= 0.5
+        d_norm = np.zeros_like(d_up)
+        d_norm[valid_up] = (d_up[valid_up] / w_up[valid_up]) * (1.0 / scale)
+        disp_pred = np.where(valid_up, d_norm, -1.0)
 
     runtime_ms = (time.perf_counter() - t0) * 1000.0
 
     # Calculate standard disparity metrics on non-occluded mask
-    bad1 = stereo.compute_bad_pixel_rate(disp_pred, disp_gt, mask_nocc, threshold=1.0)
-    bad2 = stereo.compute_bad_pixel_rate(disp_pred, disp_gt, mask_nocc, threshold=2.0)
-    bad4 = stereo.compute_bad_pixel_rate(disp_pred, disp_gt, mask_nocc, threshold=4.0)
-    bad2_ca = stereo.compute_bad_pixel_rate(disp_pred, disp_gt, mask_nocc, threshold=2.0, completeness_aware=True)
-    mae = stereo.compute_depth_mae(disp_pred, disp_gt, mask_nocc)
-    rmse = stereo.compute_depth_rmse(disp_pred, disp_gt, mask_nocc)
-    coverage = stereo.compute_valid_coverage(disp_pred, mask_nocc)
+    eval_res = stereo.evaluate_disparity_map(disp_pred, disp_gt, mask_nocc)
+    bad1 = eval_res["bad1_pct"]
+    bad2 = eval_res["bad2_pct"]
+    bad4 = eval_res["bad4_pct"]
+    bad2_ca = eval_res["bad2_ca_pct"]
+    mae = eval_res["disp_mae_px"]
+    rmse = eval_res["disp_rmse_px"]
+    coverage = eval_res["coverage_pct"]
 
     # Calculate metric depth errors if calibration is present
     fx = calib.get("cam0", np.eye(3))[0, 0]
@@ -183,7 +188,7 @@ def evaluate_middlebury_scene(
     if fx > 0 and baseline_m > 0:
         depth_gt = stereo.disparity_to_depth(disp_gt, fx, baseline_m, doffs=doffs)
         depth_pred = stereo.disparity_to_depth(disp_pred, fx, baseline_m, doffs=doffs)
-        joint_eval = mask_nocc & (depth_gt > 0) & (depth_pred > 0) & np.isfinite(depth_pred)
+        joint_eval = mask_nocc & (depth_gt > 0) & (depth_pred > 0) & np.isfinite(depth_pred) & np.isfinite(depth_gt)
         if np.count_nonzero(joint_eval) > 0:
             diff_z = np.abs(depth_pred[joint_eval] - depth_gt[joint_eval])
             depth_mae_m = float(np.mean(diff_z))

@@ -114,3 +114,50 @@ def test_gunung_coverage_reporting():
         assert 1.0 <= rec["frame_coverage_pct"] <= 15.0
         assert 10.0 <= rec["ref_coverage_pct"] <= 60.0
 
+
+def test_middlebury_upscaling_normalized_convolution():
+    """Verify that normalized convolution upscaling does not bleed invalid 0-sentinels into valid border pixels."""
+    import cv2
+    # Create small 4x4 disparity map where left half is valid (20.0) and right half is invalid (-1.0)
+    disp_small = np.array([
+        [20.0, 20.0, -1.0, -1.0],
+        [20.0, 20.0, -1.0, -1.0],
+        [20.0, 20.0, -1.0, -1.0],
+        [20.0, 20.0, -1.0, -1.0],
+    ], dtype=np.float32)
+
+    scale = 0.5
+    w_orig, h_orig = 8, 8
+
+    # Apply normalized convolution upscaling (as implemented in field.py)
+    valid_m = (disp_small >= 0.0) & np.isfinite(disp_small)
+    d_fill = np.where(valid_m, disp_small, 0.0).astype(np.float32)
+    w_m = valid_m.astype(np.float32)
+    d_up = cv2.resize(d_fill, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+    w_up = cv2.resize(w_m, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+    valid_up = w_up >= 0.5
+    d_norm = np.zeros_like(d_up)
+    d_norm[valid_up] = (d_up[valid_up] / w_up[valid_up]) * (1.0 / scale)
+    disp_up = np.where(valid_up, d_norm, -1.0)
+
+    # In the valid region, all upscaled disparities should be exactly 40.0 (20.0 / 0.5)
+    # The normalized convolution prevents the zero sentinel from reducing boundary values below 40.0
+    valid_pixels = disp_up[valid_up]
+    assert np.all(valid_pixels == 40.0)
+    # Invalid region is marked -1.0
+    assert np.all(disp_up[~valid_up] == -1.0)
+
+
+def test_evaluate_middlebury_scene_smoke():
+    """Verify evaluate_middlebury_scene runs and returns valid metric bounds on available training data."""
+    adirondack_dir = field.DEFAULT_MIDDLEBURY_ROOT / "Adirondack"
+    if adirondack_dir.exists():
+        res = field.evaluate_middlebury_scene(adirondack_dir, scale=0.5)
+        assert res["scene"] == "Adirondack"
+        assert res["scale"] == 0.5
+        assert 0.0 <= res["bad2_pct"] <= 100.0
+        assert 0.0 <= res["coverage_pct"] <= 100.0
+        assert np.isfinite(res["disp_mae_px"])
+        assert np.isfinite(res["depth_mae_m"])
+        assert res["runtime_ms"] > 0.0
+

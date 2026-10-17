@@ -366,3 +366,103 @@ def test_depth_sensitivity_and_physics_scaling():
     z_half = stereo.disparity_to_depth(d_half, f_px * s, b_m)
     assert np.allclose(z_full, z_half)
 
+
+def test_constant_disparity_visibility_mask_boundary():
+    """Verify constant scene visibility mask correctly identifies left unmatchable border."""
+    for d in [8, 16, 24]:
+        for w, h in [(160, 120), (240, 180), (320, 240)]:
+            left, right, disp_gt, valid_mask = stereo.generate_constant_disparity_scene(
+                width=w, height=h, disparity=d, seed=42
+            )
+            # Left border pixels [0, d) in left view project to x_R = x_L - d < 0 (out of bounds)
+            assert np.all(~valid_mask[:, :d]), f"Left border [0, {d}) must be invalid"
+            # Pixels [d, w) in left view project to x_R = x_L - d in [0, w - d) (in bounds)
+            assert np.all(valid_mask[:, d:]), f"Interior region [{d}, {w}) must be valid"
+
+            # Check that every valid pixel has exact correspondence: left(y, x) == right(y, x - d)
+            for y in range(0, h, 20):
+                for x in range(d, w, 20):
+                    assert left[y, x] == right[y, x - d], f"Pixel mismatch at ({x}, {y})"
+
+
+def test_lr_consistency_geometry():
+    """Verify left-right consistency geometry, out-of-bounds rejection, and sentinel handling."""
+    h, w = 60, 80
+    disp_l = np.full((h, w), 10.0, dtype=np.float32)
+    # Right matcher convention: matching disparity magnitude is 10.0
+    disp_r = np.full((h, w), -10.0, dtype=np.float32)
+
+    # 1. Left border pixels x < 10 project to xr = x - 10 < 0 (out of bounds)
+    pct, mask = stereo.compute_lr_consistency(disp_l, disp_r, threshold=1.0)
+    assert np.all(~mask[:, :10]), "Out of bounds left border must fail consistency"
+    assert np.all(mask[:, 10:]), "Valid in-bounds matches must pass consistency"
+    expected_pct = ((w - 10) / w) * 100.0
+    assert np.isclose(pct, expected_pct)
+
+    # 2. Corrupt some right disparities with invalid sentinel -1.0
+    disp_r_corrupt = disp_r.copy()
+    disp_r_corrupt[:, 20:30] = -1.0
+    pct2, mask2 = stereo.compute_lr_consistency(disp_l, disp_r_corrupt, threshold=1.0)
+    # Left pixels that project into [20, 30) are [30, 40)
+    assert np.all(~mask2[:, 30:40]), "Pixels matching invalid right disparity must fail consistency"
+
+    # 3. Disparity discrepancy exceeding threshold fails
+    disp_r_bad = disp_r.copy()
+    disp_r_bad[:, 50:] = -15.0  # discrepancy = |10 - 15| = 5.0 > 1.0
+    pct3, mask3 = stereo.compute_lr_consistency(disp_l, disp_r_bad, threshold=1.0)
+    # Left pixels that project into [50, w) are [60, w)
+    assert np.all(~mask3[:, 60:]), "Pixels with discrepancy > threshold must fail consistency"
+
+
+def test_photometric_warp_mae_geometry():
+    """Verify photometric warp MAE excludes out-of-bounds coordinates and handles sentinels."""
+    h, w = 50, 60
+    # Clean pattern
+    rng = np.random.default_rng(42)
+    left = rng.integers(30, 220, (h, w), dtype=np.uint8)
+    disp = 12.0
+    disp_map = np.full((h, w), disp, dtype=np.float32)
+
+    # Construct right view shifted by exact disparity
+    right = np.zeros_like(left)
+    right[:, :w - int(disp)] = left[:, int(disp):]
+
+    mae = stereo.compute_photometric_warp_mae(left, right, disp_map)
+    # Since left[:, 12:] matches right[:, :48], warp MAE over valid region must be 0.0
+    assert np.isclose(mae, 0.0, atol=1e-5)
+
+    # All-invalid disparity map must return NaN, not a magic sentinel like 999.0
+    disp_invalid = np.full((h, w), -1.0, dtype=np.float32)
+    mae_nan = stereo.compute_photometric_warp_mae(left, right, disp_invalid)
+    assert np.isnan(mae_nan)
+
+
+def test_reproject_to_pointcloud_geometry():
+    """Verify Q-matrix pointcloud reprojection with known metric coordinates."""
+    # Construct an ideal disparity-to-depth Q matrix
+    # [1  0   0    -cx  ]
+    # [0  1   0    -cy  ]
+    # [0  0   0     f   ]
+    # [0  0  -1/B  (cx-cx')/B]
+    f = 500.0
+    B = 0.1
+    cx = 32.0
+    cy = 24.0
+    Q = np.array([
+        [1.0, 0.0, 0.0, -cx],
+        [0.0, 1.0, 0.0, -cy],
+        [0.0, 0.0, 0.0, f],
+        [0.0, 0.0, 1.0 / B, 0.0]
+    ], dtype=np.float32)
+
+    disp = np.full((48, 64), 10.0, dtype=np.float32)
+    # Invalidate a pixel
+    disp[0, 0] = -1.0
+
+    pts, _ = stereo.reproject_to_pointcloud(disp, Q, min_disp=0.5, max_depth=50.0)
+    assert len(pts) == 48 * 64 - 1
+    assert np.all(np.isfinite(pts))
+    # At d=10.0, Z = fB / d = 500 * 0.1 / 10 = 5.0 m
+    assert np.allclose(pts[:, 2], 5.0, atol=0.1)
+
+

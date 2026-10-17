@@ -24,7 +24,7 @@ from PIL import Image
 import stereo
 import field
 import optimize
-import cnn
+
 
 ASSETS_DIR = Path("assets")
 RESULTS_DIR = Path("results")
@@ -189,22 +189,33 @@ def generate_figure_02_middlebury(output_dir: Path = ASSETS_DIR) -> None:
     dl = m.compute(in0, in1)
     dr = rm.compute(in1, in0)
 
+    def upscale_disp(d_pred: np.ndarray, scale: float = 0.5) -> np.ndarray:
+        vm = (d_pred >= 0.0) & np.isfinite(d_pred)
+        df = np.where(vm, d_pred, 0.0).astype(np.float32)
+        wm = vm.astype(np.float32)
+        dup = cv2.resize(df, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        wup = cv2.resize(wm, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
+        vup = wup >= 0.5
+        dnorm = np.zeros_like(dup)
+        dnorm[vup] = (dup[vup] / wup[vup]) * (1.0 / scale)
+        return np.where(vup, dnorm, -1.0)
+
     # Raw disparity
     disp_raw = dl.astype(np.float32) / 16.0
-    disp_raw[disp_raw <= 0] = 0.0
-    disp_raw_up = cv2.resize(disp_raw, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * 2.0
+    disp_raw[dl <= -16] = -1.0
+    disp_raw_up = upscale_disp(disp_raw, scale=0.5)
 
     # WLS filter
     wls = cv2.ximgproc.createDisparityWLSFilter(m)
     wls.setLambda(8000.0)
     wls.setSigmaColor(1.5)
     disp_wls = wls.filter(dl, in0, None, dr).astype(np.float32) / 16.0
-    disp_wls[disp_wls <= 0] = 0.0
-    disp_wls_up = cv2.resize(disp_wls, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR) * 2.0
+    disp_wls[disp_wls <= 0] = -1.0
+    disp_wls_up = upscale_disp(disp_wls, scale=0.5)
 
     # Error maps on non-occluded mask
-    err_raw = np.where(mask & (disp_raw_up > 0), np.abs(disp_raw_up - gt), np.nan)
-    err_wls = np.where(mask & (disp_wls_up > 0), np.abs(disp_wls_up - gt), np.nan)
+    err_raw = np.where(mask & (disp_raw_up >= 0), np.abs(disp_raw_up - gt), np.nan)
+    err_wls = np.where(mask & (disp_wls_up >= 0), np.abs(disp_wls_up - gt), np.nan)
 
     bad2_raw = stereo.compute_bad_pixel_rate(disp_raw_up, gt, mask, threshold=2.0)
     bad2_wls = stereo.compute_bad_pixel_rate(disp_wls_up, gt, mask, threshold=2.0)
@@ -446,6 +457,13 @@ def generate_figure_05_cpu_pareto(output_dir: Path = ASSETS_DIR) -> None:
 
 def generate_figure_06_cnn(output_dir: Path = ASSETS_DIR) -> None:
     """Generate Figure 6: TinyStereoNet architecture, loss curve, and Conv1 filters."""
+    try:
+        import torch
+        import cnn
+    except ImportError as e:
+        print(f"Skipping Figure 6: Optional ML dependencies not installed ({e}).")
+        return
+
     cnn_json = RESULTS_DIR / "cnn_metrics.json"
     if not cnn_json.exists():
         cnn.run_cnn_experiment(save_json=True)
